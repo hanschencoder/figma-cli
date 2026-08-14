@@ -134,6 +134,7 @@ async function nodeTree(params: NodeTreeParams): Promise<NodeTreeResult> {
     depth,
     maxNodes,
     includeHidden: params?.includeHidden ?? false,
+    expandInstances: params?.expandInstances ?? false,
   });
 
   const roots: BaseNode[] = [];
@@ -331,11 +332,14 @@ function options(o: {
   depth: number;
   maxNodes: number;
   includeHidden?: boolean;
+  expandInstances?: boolean;
 }): CollectOptions {
   return {
     detail: o.detail,
     depth: o.depth,
     includeHidden: o.includeHidden ?? false,
+    expandInstances: o.expandInstances ?? false,
+    atRoot: true,
     budget: { remaining: o.maxNodes },
   };
 }

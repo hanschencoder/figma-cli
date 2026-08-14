@@ -292,9 +292,13 @@ async function main() {
     const { tools } = await client.request('tools/list', {});
     check('tools/list', tools.length === 11, `${tools.length} 个 tool`);
 
-    // 还没有插件连接时应该给出可操作的提示，而不是崩掉
-    const noDoc = await client.request('tools/call', { name: 'get_current_context', arguments: {} });
-    check('无插件时 get_current_context 报 NO_DOCUMENT', extractText(noDoc).includes('NO_DOCUMENT'));
+    // 目标文档不存在时应给出可操作的提示，而不是崩掉。
+    // 不用「没有任何连接」来断言 —— Figma 开着时真实插件可能已经连上来了。
+    const missing = await client.request('tools/call', {
+      name: 'get_current_context',
+      arguments: { docId: 'no-such-doc' },
+    });
+    check('未知 docId 报 NOT_FOUND', extractText(missing).includes('NOT_FOUND'));
 
     const port = JSON.parse(readFileSync(join(homedir(), '.figma-mcp', 'last-port'), 'utf8')).port;
     const token = readFileSync(join(homedir(), '.figma-mcp', 'token'), 'utf8').trim();
@@ -317,8 +321,13 @@ async function main() {
       ['get_node_image', { id: '12:34' }],
     ];
 
+    // 必须显式锁定假文档：Figma 开着时真实插件的 watchdog 也会连上这个
+    // server 实例，两个文档并存会让路由（正确地）拒绝猜测目标。
     for (const [name, args] of cases) {
-      const res = await client.request('tools/call', { name, arguments: args });
+      const res = await client.request('tools/call', {
+        name,
+        arguments: { ...args, docId: DOC_ID },
+      });
       const body = extractText(res);
       check(name, !res.isError, `${body.length} 字符`);
       console.log(indent(body));

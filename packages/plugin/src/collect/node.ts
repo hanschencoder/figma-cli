@@ -37,6 +37,14 @@ const COMPACT_TEXT_LIMIT = 400;
 export interface CollectOptions {
   detail: Detail;
   includeHidden: boolean;
+  /**
+   * 是否展开组件实例的内部结构。
+   * 默认关闭：实例内部是设计系统的实现细节，展开会吃掉绝大部分节点预算，
+   * 对生成代码几乎没帮助 —— 实例名 + props 才是有用的信息。
+   */
+  expandInstances: boolean;
+  /** 当前节点是否是本次请求的根。显式请求某个实例的树时应该能看进去 */
+  atRoot: boolean;
   /** 剩余可展开的层数 */
   depth: number;
   /** 整棵树的节点预算，防止大文件把 context 撑爆 */
@@ -103,9 +111,12 @@ function collectLayout(node: SceneNode, info: NodeInfo): void {
     const layout: LayoutInfo = { mode: asFrame.layoutMode as LayoutInfo['mode'] };
 
     if (asFrame.layoutWrap === 'WRAP') layout.wrap = true;
-    if (asFrame.primaryAxisAlignItems === 'SPACE_BETWEEN') {
-      layout.gap = 'AUTO';
-    } else if (typeof asFrame.itemSpacing === 'number' && asFrame.itemSpacing !== 0) {
+    // SPACE_BETWEEN 下 itemSpacing 无效，由下面的 primaryAlign 表达即可
+    if (
+      asFrame.primaryAxisAlignItems !== 'SPACE_BETWEEN' &&
+      typeof asFrame.itemSpacing === 'number' &&
+      asFrame.itemSpacing !== 0
+    ) {
       layout.gap = num(asFrame.itemSpacing);
     }
     if (asFrame.layoutWrap === 'WRAP' && typeof asFrame.counterAxisSpacing === 'number') {
@@ -454,9 +465,18 @@ async function collectChildren(
 
   if (visible.length === 0) return;
 
+  const stopAtInstance = node.type === 'INSTANCE' && !opts.expandInstances && !opts.atRoot;
+  if (stopAtInstance) {
+    info.childCount = visible.length;
+    info.truncated = true;
+    info.truncatedBy = 'instance';
+    return;
+  }
+
   if (opts.depth <= 0) {
     info.childCount = visible.length;
     info.truncated = true;
+    info.truncatedBy = 'depth';
     return;
   }
 
@@ -465,12 +485,14 @@ async function collectChildren(
     if (opts.budget.remaining <= 0) {
       info.childCount = visible.length;
       info.truncated = true;
+      info.truncatedBy = 'budget';
       break;
     }
     opts.budget.remaining--;
     out.push(
       await collectNode(child, cache, {
         ...opts,
+        atRoot: false,
         depth: opts.depth - 1,
       }),
     );

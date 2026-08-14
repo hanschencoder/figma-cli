@@ -168,23 +168,30 @@ export function registerTools(server: McpServer, ctx: Ctx): void {
         '按层级读取设计稿结构，是「设计稿转代码」的主力 tool。\n' +
         '不传 rootId 时读取当前选中项；没有选中项时读取当前页。\n' +
         'depth 默认 2，深层节点只给 id/name/type 并标注还有多少子节点，' +
-        '需要时再指定 rootId 继续下钻 —— 不要一次性拉很深，会把上下文撑爆。\n\n' +
+        '需要时再指定 rootId 继续下钻 —— 不要一次性拉很深，会把上下文撑爆。\n' +
+        '组件实例的内部结构默认不展开（那是设计系统的实现细节，展开会吃掉' +
+        '绝大部分节点预算）；实例名 + props 通常就够了，要文案用 get_text_content。\n\n' +
         DSL_LEGEND,
       inputSchema: {
         ...docIdArg,
         rootId: z.string().optional().describe('起始节点 id，省略则用当前选中项'),
         depth: z.number().int().min(0).max(20).optional().describe('展开层数，默认 2'),
         includeHidden: z.boolean().optional().describe('包含隐藏图层，默认 false'),
+        expandInstances: z
+          .boolean()
+          .optional()
+          .describe('展开组件实例内部，默认 false。rootId 直接指向实例时总是展开'),
         maxNodes: z.number().int().min(1).max(3000).optional().describe('节点数上限，默认 400'),
       },
     },
-    async ({ docId, rootId, depth, includeHidden, maxNodes }) =>
+    async ({ docId, rootId, depth, includeHidden, expandInstances, maxNodes }) =>
       guard(async () => {
         const target = router.resolve(docId);
         const { result } = await hub.request(target, Method.NodeTree, {
           rootId,
           depth,
           includeHidden,
+          expandInstances,
           maxNodes,
         });
         const body = serializeNodes(result.roots, { detail: 'compact' });

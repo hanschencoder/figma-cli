@@ -66,8 +66,8 @@ export interface EffectInfo {
 export interface LayoutInfo {
   mode: 'HORIZONTAL' | 'VERTICAL' | 'GRID';
   wrap?: boolean;
-  /** itemSpacing；'AUTO' 表示 space-between */
-  gap?: number | 'AUTO';
+  /** itemSpacing。SPACE_BETWEEN 时不给，由 primaryAlign 表达 */
+  gap?: number;
   /** counterAxisSpacing，仅 wrap 时有意义 */
   gapCross?: number;
   /** [top, right, bottom, left] */
@@ -199,9 +199,11 @@ export interface NodeInfo {
   exportable?: true;
 
   children?: NodeInfo[];
-  /** children 被 depth 截断时给出总数，提示可以继续下钻 */
+  /** children 被截断时给出总数，提示可以继续下钻 */
   childCount?: number;
   truncated?: true;
+  /** 截断原因。instance 需要给出和 depth/budget 不同的下一步建议 */
+  truncatedBy?: 'depth' | 'budget' | 'instance';
 }
 
 export interface NodeMatch {

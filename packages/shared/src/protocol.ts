@@ -153,6 +153,12 @@ export interface NodeTreeParams {
   /** 展开层数，0 表示只要根节点自身 */
   depth?: number;
   includeHidden?: boolean;
+  /**
+   * 是否展开组件实例的内部结构。默认 false。
+   * 实例内部（状态栏、图标组…）通常是设计系统的实现细节，展开会吃掉
+   * 绝大部分节点预算，对生成代码几乎没有帮助 —— 实例名 + props 才是有用的。
+   */
+  expandInstances?: boolean;
   /** 单次返回的节点数上限，防止大文件把 context 撑爆 */
   maxNodes?: number;
 }

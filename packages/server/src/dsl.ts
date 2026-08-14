@@ -62,9 +62,13 @@ function writeNode(
   opts: DslOptions,
 ): void {
   const indent = '  '.repeat(depth);
-  const parts: string[] = [
-    `${TYPE_ALIAS[node.type] ?? node.type} ${quote(node.name)} #${node.id}`,
-  ];
+  // Figma 默认拿内容给文本图层命名，名字和内容一样时只写一遍
+  const nameIsContent =
+    node.text !== undefined && squash(node.name) === squash(node.text.characters);
+  const head = nameIsContent
+    ? `${TYPE_ALIAS[node.type] ?? node.type} #${node.id}`
+    : `${TYPE_ALIAS[node.type] ?? node.type} ${quote(node.name)} #${node.id}`;
+  const parts: string[] = [head];
 
   const attrs = nodeAttrs(node, parent, opts);
   if (attrs.length > 0) parts.push(attrs.join(' '));
@@ -76,9 +80,7 @@ function writeNode(
   }
   if (node.truncated && node.childCount) {
     const shown = node.children?.length ?? 0;
-    lines.push(
-      `${indent}  … 还有 ${node.childCount - shown} 个子节点未展开（用 get_node_tree 指定 rootId=#${node.id} 继续下钻）`,
-    );
+    lines.push(`${indent}  … ${truncationHint(node, node.childCount - shown)}`);
   }
 }
 
@@ -172,12 +174,10 @@ function nodeAttrs(node: NodeInfo, parent: NodeInfo | undefined, opts: DslOption
   // 组件
   if (node.component) {
     const c = node.component;
-    if (c.mainComponentName) {
-      const label = c.componentSetName
-        ? `${c.componentSetName}/${c.mainComponentName}`
-        : c.mainComponentName;
-      out.push(`→ ${quote(label)}${c.remote ? ' (library)' : ''}`);
-    }
+    // 变体的 mainComponentName 形如 "样式=文字按钮"，和下面的 props 完全重复，
+    // 这种情况只保留组件集名
+    const label = c.componentSetName ?? c.mainComponentName;
+    if (label) out.push(`→ ${quote(label)}${c.remote ? ' (library)' : ''}`);
     if (c.key && !c.mainComponentName) out.push(`key=${c.key}`);
     if (c.properties && Object.keys(c.properties).length > 0) {
       const props = Object.entries(c.properties)
@@ -199,6 +199,17 @@ function nodeAttrs(node: NodeInfo, parent: NodeInfo | undefined, opts: DslOption
   if (node.exportable) out.push('exportable');
 
   return out;
+}
+
+/**
+ * 截断提示要短。为什么不展开实例、怎么继续下钻，都写在 tool 描述里了，
+ * 逐行重复一遍完整说明是纯粹的 token 浪费 —— 一棵树里可能有几十个实例。
+ */
+function truncationHint(node: NodeInfo, hidden: number): string {
+  const drill = `rootId=#${node.id}`;
+  if (node.truncatedBy === 'instance') return `实例内部 ${hidden} 节点未展开（${drill}）`;
+  if (node.truncatedBy === 'budget') return `还有 ${hidden} 个子节点，节点预算用尽（提高 maxNodes 或 ${drill}）`;
+  return `还有 ${hidden} 个子节点未展开（${drill}）`;
 }
 
 /** 只负责排版属性 —— 文本内容本身已经在前面输出过了。 */
@@ -345,6 +356,11 @@ function short(value: string): string {
   return map[value] ?? value;
 }
 
+/** 归一化空白后比较，用于判断图层名是否只是内容的副本。 */
+function squash(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
 function quote(text: string): string {
   const escaped = text.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
   return `"${escaped}"`;
@@ -380,7 +396,12 @@ export function serializeMatches(matches: NodeMatch[], total: number): string {
 
 export function serializeTextItems(items: TextItem[], truncated: boolean): string {
   if (items.length === 0) return '该子树下没有文本节点。';
-  const lines = items.map((i) => `#${i.id}  ${i.name}: ${quote(i.text)}`);
+  // Figma 默认用内容给文本图层命名，原样输出会把整段文案写两遍
+  const lines = items.map((i) =>
+    squash(i.name) === squash(i.text)
+      ? `#${i.id}  ${quote(i.text)}`
+      : `#${i.id}  ${i.name}: ${quote(i.text)}`,
+  );
   if (truncated) lines.push('… 已截断（可用 limit 调整）');
   return lines.join('\n');
 }

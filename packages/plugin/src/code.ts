@@ -82,6 +82,8 @@ figma.on('selectionchange', () => {
           detail: 'compact',
           depth: 0,
           includeHidden: false,
+          expandInstances: false,
+          atRoot: true,
           budget: { remaining: 10 },
         }),
       );
