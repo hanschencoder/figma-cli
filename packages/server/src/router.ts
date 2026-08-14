@@ -69,12 +69,20 @@ export class DocumentRouter {
     });
   }
 
-  candidates(): { docId: string; name: string; currentPage?: string; selection?: number }[] {
+  candidates(): {
+    docId: string;
+    name: string;
+    currentPage?: string;
+    selection?: number;
+    plugin?: string;
+  }[] {
     return this.hub.listDocuments().map((c) => ({
       docId: c.doc.docId,
       name: c.doc.name,
       currentPage: c.currentPageName,
       selection: c.selectionHint?.count,
+      // Figma 会缓存插件代码，「改了没生效」十有八九是这里还是旧版本
+      plugin: c.pluginVersion,
     }));
   }
 

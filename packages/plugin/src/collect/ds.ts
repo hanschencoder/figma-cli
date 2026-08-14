@@ -35,8 +35,15 @@ export async function collectVariables(
     limit: number;
     library?: boolean;
     values?: boolean;
+    scan?: boolean;
   },
-): Promise<{ collections: VariableCollectionInfo[]; truncated: boolean; libraryError?: string }> {
+): Promise<{
+  collections: VariableCollectionInfo[];
+  truncated: boolean;
+  libraryError?: string;
+  libraryCount?: number;
+  scanned?: number;
+}> {
   const all = await figma.variables.getLocalVariableCollectionsAsync();
   const selected = opts.collectionId
     ? all.filter((c) => c.id === opts.collectionId)
@@ -73,10 +80,12 @@ export async function collectVariables(
 
   // 外部 Library：设计稿里的 $name 大多来自这里，本地集合为空是常态
   let libraryError: string | undefined;
+  let libraryCount: number | undefined;
   if (opts.library !== false && !opts.collectionId) {
     try {
       const { collections: remote, truncated: cut } = await collectLibraryVariables(cache, opts);
       collections.push(...remote);
+      libraryCount = remote.length;
       if (cut) truncated = true;
     } catch (err) {
       // 个人草稿文件、没开 teamlibrary 权限、组织策略限制都会走到这里。
@@ -85,7 +94,96 @@ export async function collectVariables(
     }
   }
 
-  return { collections, truncated, libraryError };
+  // teamLibrary 只认「在本文件里启用了的变量库」。业务稿常常只是引用了别人的组件，
+  // 组件内部绑着变量、库却没启用 —— 那条路就是空的，但设计稿里明明全是 $name。
+  // 所以再兜一层：从页面上真正被引用的变量反查它所属的集合，值和 mode 都能拿到。
+  let scanned: number | undefined;
+  if (opts.scan !== false && !opts.collectionId) {
+    const known = new Set(collections.map((c) => c.id));
+    const { collections: referenced, nodes } = await collectReferencedCollections(cache, opts, known);
+    collections.push(...referenced);
+    scanned = nodes;
+  }
+
+  return { collections, truncated, libraryError, libraryCount, scanned };
+}
+
+/**
+ * 从当前页被引用的变量反查集合。
+ *
+ * 只需要每个集合里的**任意一个**变量就能拿到 collectionId，进而拿到它的
+ * modes 和完整 variableIds —— 所以扫描可以在见到足够多的集合后早早停下。
+ */
+async function collectReferencedCollections(
+  cache: ResolveCache,
+  opts: { expand: boolean; limit: number },
+  known: Set<string>,
+): Promise<{ collections: VariableCollectionInfo[]; nodes: number }> {
+  const page = figma.currentPage;
+  const nodes = 'findAll' in page ? page.findAll(hasBoundVariables) : [];
+
+  const variableIds = new Set<string>();
+  for (const node of nodes.slice(0, SCAN_NODE_LIMIT)) {
+    for (const id of boundVariableIds(node)) variableIds.add(id);
+  }
+
+  const collectionIds = new Set<string>();
+  for (const id of variableIds) {
+    const variable = await cache.variable(id);
+    if (variable && !known.has(variable.variableCollectionId)) {
+      collectionIds.add(variable.variableCollectionId);
+    }
+  }
+
+  const out: VariableCollectionInfo[] = [];
+  for (const collectionId of collectionIds) {
+    const collection = await figma.variables.getVariableCollectionByIdAsync(collectionId);
+    if (!collection) continue;
+
+    const info: VariableCollectionInfo = {
+      id: collection.id,
+      name: collection.name,
+      modes: collection.modes.map((m) => ({ id: m.modeId, name: m.name })),
+      defaultModeId: collection.defaultModeId,
+      variableCount: collection.variableIds.length,
+      referenced: true,
+    };
+    if (collection.remote) info.remote = true;
+
+    if (opts.expand) {
+      const variables: VariableInfo[] = [];
+      for (const id of collection.variableIds.slice(0, opts.limit)) {
+        const variable = await cache.variable(id);
+        if (variable) variables.push(await mapVariable(variable, collection, cache));
+      }
+      info.variables = variables;
+    }
+    out.push(info);
+  }
+
+  return { collections: out, nodes: Math.min(nodes.length, SCAN_NODE_LIMIT) };
+}
+
+/** 扫描节点数上限。大页面上全量遍历会卡住 Figma 主线程。 */
+const SCAN_NODE_LIMIT = 3000;
+
+function hasBoundVariables(node: SceneNode): boolean {
+  const bound = (node as { boundVariables?: Record<string, unknown> }).boundVariables;
+  return bound !== undefined && Object.keys(bound).length > 0;
+}
+
+function boundVariableIds(node: SceneNode): string[] {
+  const bound = (node as { boundVariables?: Record<string, unknown> }).boundVariables;
+  if (!bound) return [];
+  const out: string[] = [];
+  for (const value of Object.values(bound)) {
+    // 标量绑定是单个 alias，fills / strokes / effects 这些是 alias 数组
+    for (const alias of Array.isArray(value) ? value : [value]) {
+      const id = (alias as VariableAlias | undefined)?.id;
+      if (typeof id === 'string') out.push(id);
+    }
+  }
+  return out;
 }
 
 /**

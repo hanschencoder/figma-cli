@@ -628,6 +628,7 @@ export function serializeVariables(collections: VariableCollectionInfo[]): strin
         f.set('variableCount', collection.variableCount);
         f.set('library', collection.libraryName);
         if (collection.remote && !collection.libraryName) f.set('remote', true);
+        if (collection.referenced) f.set('source', 'referenced');
 
         const variables = collection.variables ?? [];
         if (variables.length > 0) {

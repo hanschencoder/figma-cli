@@ -255,6 +255,8 @@ export interface VariableCollectionInfo {
   modes: { id: string; name: string }[];
   defaultModeId?: string;
   variableCount: number;
+  /** 这个集合是从「页面上实际引用到的变量」反查出来的，不是本地也不是启用的库 */
+  referenced?: boolean;
   /** 未展开时省略 */
   variables?: VariableInfo[];
 }

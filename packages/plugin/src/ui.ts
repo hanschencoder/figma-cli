@@ -25,7 +25,7 @@ import {
 } from '@figma-mcp/shared';
 import type { SandboxToUi, UiToSandbox } from './bridge-types.js';
 
-const PLUGIN_VERSION = '0.1.0';
+const PLUGIN_VERSION = '0.2.0';
 const SCAN_INTERVAL_MS = 5_000;
 const PROBE_TIMEOUT_MS = 800;
 

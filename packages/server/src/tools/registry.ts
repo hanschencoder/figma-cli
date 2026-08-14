@@ -205,6 +205,7 @@ export function createTools(ctx: ToolContext): ToolDef[] {
                   ];
                   if (d.currentPage) fields.push(['page', d.currentPage]);
                   if (d.selection) fields.push(['selection', d.selection]);
+                  if (d.plugin) fields.push(['plugin', d.plugin]);
                   if (d.docId === active) fields.push(['active', true]);
                   return fields;
                 }),
@@ -615,6 +616,10 @@ export function createTools(ctx: ToolContext): ToolDef[] {
           .boolean()
           .optional()
           .describe('解析 Library 变量各 mode 的值（逐个 import，慢），默认 false'),
+        scan: z
+          .boolean()
+          .optional()
+          .describe('扫当前页，从实际引用到的变量反查它所属的集合，默认 true'),
       },
       run: async (args) =>
         guard(async () => {
@@ -625,17 +630,26 @@ export function createTools(ctx: ToolContext): ToolDef[] {
             limit: args.limit as number | undefined,
             library: args.library as boolean | undefined,
             values: args.values as boolean | undefined,
+            scan: args.scan as boolean | undefined,
           });
           let body = serializeVariables(result.collections);
           if (result.truncated) body += note('变量数量超过上限，已截断');
+
+          const wantLibrary = args.library !== false && args.collectionId === undefined;
           if (result.libraryError) {
             body += note(`读不到外部 Library 的变量：${result.libraryError}`);
-          }
-          // 只列了清单没给值时说一句，否则用户会以为是坏了
-          if (
-            !args.values &&
-            result.collections.some((c) => c.libraryName !== undefined)
-          ) {
+          } else if (wantLibrary && result.libraryCount === undefined) {
+            // 老插件不返回这个字段。Figma 缓存插件代码，这是最常见的「改了没生效」
+            body += note(
+              '插件没有返回 Library 信息 —— Figma 里跑的多半还是旧版插件，' +
+                '关掉插件窗口重开（figma docs 可以看插件版本）',
+            );
+          } else if (wantLibrary && result.libraryCount === 0 && result.scanned !== undefined) {
+            body += note(
+              `本文件没有启用任何 Library 变量库；以下集合是扫了当前页 ${result.scanned} 个` +
+                '带变量绑定的节点反查出来的（source: referenced）',
+            );
+          } else if (!args.values && result.collections.some((c) => c.libraryName !== undefined)) {
             body += note('Library 变量只列了清单，要各 mode 的具体值加 --values（较慢）');
           }
           return ok(body);

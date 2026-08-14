@@ -308,12 +308,26 @@ export interface DsVariablesParams {
    * 所以默认关闭 —— 只列清单（名字 + 类型）已经够把设计稿里的 $name 对上号了。
    */
   values?: boolean;
+  /**
+   * 从当前页实际引用到的变量反查集合，默认 true。
+   * teamLibrary 只认「在本文件启用了的库」，而业务稿常常只是引用了别人的组件 ——
+   * 那条路是空的，这条路才拿得到设计稿真正在用的那套 token。
+   */
+  scan?: boolean;
 }
 export interface DsVariablesResult {
   collections: VariableCollectionInfo[];
   truncated?: boolean;
   /** teamLibrary 读不到时的原因（个人文件、权限、组织策略…），不影响本地集合 */
   libraryError?: string;
+  /**
+   * teamLibrary 报告的可用集合数。
+   * 字段缺失 = 插件根本没查（十有八九是 Figma 里跑的还是旧版插件），
+   * 0 = 查了但 Figma 说这个文件没有可用的 Library 变量集合。两者要能分清。
+   */
+  libraryCount?: number;
+  /** 为了反查引用扫描过的节点数；字段缺失说明插件没做这一步（旧版插件） */
+  scanned?: number;
 }
 
 export interface DsStylesParams {
