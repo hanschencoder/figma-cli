@@ -127,32 +127,39 @@ async function collectReferencedCollections(
     for (const id of boundVariableIds(node)) variableIds.add(id);
   }
 
-  const collectionIds = new Set<string>();
+  // collectionId → 这个集合里被引用到的变量 id。
+  // 远端集合的 variableIds 有时是空的，那时候至少还有这些兜底
+  const byCollection = new Map<string, Set<string>>();
   for (const id of variableIds) {
     const variable = await cache.variable(id);
-    if (variable && !known.has(variable.variableCollectionId)) {
-      collectionIds.add(variable.variableCollectionId);
-    }
+    if (!variable || known.has(variable.variableCollectionId)) continue;
+    const set = byCollection.get(variable.variableCollectionId) ?? new Set<string>();
+    set.add(id);
+    byCollection.set(variable.variableCollectionId, set);
   }
 
   const out: VariableCollectionInfo[] = [];
-  for (const collectionId of collectionIds) {
+  for (const [collectionId, referencedIds] of byCollection) {
     const collection = await figma.variables.getVariableCollectionByIdAsync(collectionId);
     if (!collection) continue;
+
+    // 集合自报的变量 ∪ 实际引用到的变量
+    const ids = [...new Set([...collection.variableIds, ...referencedIds])];
+    if (ids.length === 0) continue;
 
     const info: VariableCollectionInfo = {
       id: collection.id,
       name: collection.name,
       modes: collection.modes.map((m) => ({ id: m.modeId, name: m.name })),
       defaultModeId: collection.defaultModeId,
-      variableCount: collection.variableIds.length,
+      variableCount: ids.length,
       referenced: true,
     };
     if (collection.remote) info.remote = true;
 
     if (opts.expand) {
       const variables: VariableInfo[] = [];
-      for (const id of collection.variableIds.slice(0, opts.limit)) {
+      for (const id of ids.slice(0, opts.limit)) {
         const variable = await cache.variable(id);
         if (variable) variables.push(await mapVariable(variable, collection, cache));
       }

@@ -646,8 +646,8 @@ export function createTools(ctx: ToolContext): ToolDef[] {
             );
           } else if (wantLibrary && result.libraryCount === 0 && result.scanned !== undefined) {
             body += note(
-              `本文件没有启用任何 Library 变量库；以下集合是扫了当前页 ${result.scanned} 个` +
-                '带变量绑定的节点反查出来的（source: referenced）',
+              `本文件没有启用任何 Library 变量库。上面标了 source: referenced 的集合，` +
+                `是扫当前页 ${result.scanned} 个带变量绑定的节点反查出来的`,
             );
           } else if (!args.values && result.collections.some((c) => c.libraryName !== undefined)) {
             body += note('Library 变量只列了清单，要各 mode 的具体值加 --values（较慢）');
