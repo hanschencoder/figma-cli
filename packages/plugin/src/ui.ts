@@ -197,7 +197,9 @@ window.onmessage = (event: MessageEvent) => {
 
 // ------------------------------------------------------- 端口扫描与连接
 
-async function probe(port: number): Promise<boolean> {
+type ProbeResult = { ok: true } | { ok: false; reason: string };
+
+async function probe(port: number): Promise<ProbeResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
   try {
@@ -205,26 +207,66 @@ async function probe(port: number): Promise<boolean> {
       signal: controller.signal,
       cache: 'no-store',
     });
-    if (!res.ok) return false;
+    if (!res.ok) return { ok: false, reason: `HTTP ${res.status}` };
+
     const body = (await res.json()) as { service?: string; protocol?: number };
-    return body.service === 'figma-mcp' && body.protocol === PROTOCOL_VERSION;
-  } catch {
-    return false;
+    if (body.service !== 'figma-mcp') return { ok: false, reason: '端口被其它服务占用' };
+    if (body.protocol !== PROTOCOL_VERSION) {
+      return { ok: false, reason: `协议版本 ${body.protocol} ≠ ${PROTOCOL_VERSION}，需重新构建` };
+    }
+    return { ok: true };
+  } catch (err) {
+    // 连接被拒和被 CSP 拦截在 Chromium 里都是 "Failed to fetch"，区分不了，
+    // 但把原文带出来至少能看出是不是超时
+    return { ok: false, reason: err instanceof Error ? err.message : String(err) };
   } finally {
     clearTimeout(timer);
   }
 }
+
+/**
+ * 扫描结果只在**发生变化时**记一行日志。
+ * 每 5 秒刷屏一次会把日志面板冲垮，而一直静默又让人分不清
+ * 「server 没起」和「插件挂了」。
+ */
+let lastScanReport = '';
 
 async function scan(): Promise<void> {
   if (scanning || !doc || authFailed) return;
   scanning = true;
   try {
     const results = await Promise.all(
-      PORTS.map(async (port) => (conns.has(port) ? false : await probe(port))),
+      PORTS.map(async (port) =>
+        conns.has(port) ? ({ ok: false, reason: 'already connected' } as ProbeResult) : probe(port),
+      ),
     );
+
+    let found = 0;
     PORTS.forEach((port, i) => {
-      if (results[i]) connect(port);
+      if (results[i]!.ok) {
+        found++;
+        connect(port);
+      }
     });
+
+    if (found === 0 && conns.size === 0) {
+      // 汇总出现过的失败原因，去重
+      const reasons = [
+        ...new Set(results.map((r) => (r.ok ? '' : r.reason)).filter(Boolean)),
+      ];
+      const notable = reasons.filter((r) => !/Failed to fetch|NetworkError|aborted/i.test(r));
+      const report =
+        notable.length > 0
+          ? `扫描 ${PORTS[0]}-${PORTS[PORTS.length - 1]}：${notable.join('; ')}`
+          : `扫描 ${PORTS[0]}-${PORTS[PORTS.length - 1]} 无响应 —— MCP server 未启动？` +
+            `（它由 MCP 客户端拉起；单独调试可跑 npm run server）`;
+      if (report !== lastScanReport) {
+        lastScanReport = report;
+        logLine(report);
+      }
+    } else if (found > 0) {
+      lastScanReport = '';
+    }
   } finally {
     scanning = false;
     render();

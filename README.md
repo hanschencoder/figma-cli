@@ -184,13 +184,22 @@ Figma **桌面版** → `Plugins` → `Development` → `Import plugin from mani
 
 ### 3. 配置 MCP 客户端
 
-Claude Code：
+> **注意 server 的生命周期**：它不是常驻服务，而是由 MCP 客户端按需拉起的 stdio 子进程。
+> 客户端没启动它，端口段上就什么都没有，插件会一直停在「等待 SERVER」。
+
+Claude Code（在项目目录下执行，`-s user` 表示对所有项目生效）：
 
 ```bash
-claude mcp add figma -- node /绝对路径/figma-mcp/packages/server/dist/index.js
+claude mcp add figma -s user -- node "$PWD/packages/server/dist/index.js"
 ```
 
-或手写配置：
+验证：
+
+```bash
+claude mcp list       # 应看到 figma
+```
+
+其它客户端手写配置：
 
 ```json
 {
@@ -201,6 +210,12 @@ claude mcp add figma -- node /绝对路径/figma-mcp/packages/server/dist/index.
     }
   }
 }
+```
+
+**只想单独把 server 跑起来验证插件能不能连上**（不接任何 AI 客户端）：
+
+```bash
+npm run server        # 前台常驻，Ctrl-C 退出
 ```
 
 ### 4. 配对
