@@ -1,0 +1,12 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+.env
+.env.local
+
+# 插件构建产物（由 esbuild 生成，不入库）
+packages/plugin/build/
+
+# 本地调试导出的图片
+.debug/
