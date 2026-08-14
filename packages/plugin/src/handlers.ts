@@ -17,8 +17,14 @@ import {
   type DsStylesResult,
   type DsVariablesParams,
   type DsVariablesResult,
+  type ExportSpec,
+  type ExportTarget,
   type NodeDetailParams,
   type NodeDetailResult,
+  type NodeExportParams,
+  type NodeExportPlanParams,
+  type NodeExportPlanResult,
+  type NodeExportResult,
   type NodeImageParams,
   type NodeImageResult,
   type NodeInfo,
@@ -43,6 +49,8 @@ const DEFAULT_TEXT_LIMIT = 500;
 const DEFAULT_VARIABLE_LIMIT = 800;
 const DEFAULT_STYLE_LIMIT = 400;
 const DEFAULT_COMPONENT_LIMIT = 200;
+/** 递归清点切图目标时的上限，防止在大页面上扫出几千个节点 */
+const DEFAULT_EXPORT_PLAN_LIMIT = 300;
 
 export class HandlerError extends Error {
   constructor(readonly protocolError: ProtocolError) {
@@ -75,6 +83,10 @@ export async function dispatch(method: string, params: unknown): Promise<Handler
       return { result: await nodeText(params as NodeTextParams) };
     case Method.NodeImage:
       return nodeImage(params as NodeImageParams);
+    case Method.NodeExportPlan:
+      return { result: await nodeExportPlan(params as NodeExportPlanParams) };
+    case Method.NodeExport:
+      return nodeExport(params as NodeExportParams);
     case Method.DsVariables:
       return { result: await dsVariables(params as DsVariablesParams) };
     case Method.DsStyles:
@@ -282,6 +294,154 @@ async function nodeImage(params: NodeImageParams): Promise<HandlerResult> {
     width: Math.round(width * scale),
     height: Math.round(height * scale),
     scale: Math.round(scale * 1000) / 1000,
+    byteLength: bytes.byteLength,
+    chunkCount: 0, // 由 UI 侧分片后填入
+  };
+
+  return { result, bytes };
+}
+
+// ---------------------------------------------------------------- 切图
+
+/**
+ * 把 Figma 的导出设置翻译成 ExportSpec。
+ *
+ * WIDTH / HEIGHT 约束换算成等效倍率：下游只需要处理倍率一种东西，
+ * 而且倍率能直接写进文件名（@2x），像素约束不能。
+ */
+function toExportSpec(setting: ExportSettings, width: number, height: number): ExportSpec {
+  const spec: ExportSpec = { format: setting.format };
+  if (setting.suffix) spec.suffix = setting.suffix;
+
+  const constraint = 'constraint' in setting ? setting.constraint : undefined;
+  if (constraint) {
+    if (constraint.type === 'SCALE') spec.scale = constraint.value;
+    else if (constraint.type === 'WIDTH' && width > 0) spec.scale = constraint.value / width;
+    else if (constraint.type === 'HEIGHT' && height > 0) spec.scale = constraint.value / height;
+  }
+  return spec;
+}
+
+function exportTargetOf(node: SceneNode): ExportTarget {
+  const width = 'width' in node ? node.width : 0;
+  const height = 'height' in node ? node.height : 0;
+  const settings = 'exportSettings' in node ? node.exportSettings : [];
+  return {
+    id: node.id,
+    name: node.name,
+    type: node.type,
+    width: Math.round(width * 100) / 100,
+    height: Math.round(height * 100) / 100,
+    settings: settings.map((setting) => toExportSpec(setting, width, height)),
+  };
+}
+
+/** 配了导出设置的节点、以及切片节点，都是设计师明确标出来「这个要切」的。 */
+function isExportMarked(node: SceneNode): boolean {
+  if (node.type === 'SLICE') return true;
+  return 'exportSettings' in node && node.exportSettings.length > 0;
+}
+
+async function nodeExportPlan(params: NodeExportPlanParams): Promise<NodeExportPlanResult> {
+  const ids = params?.ids ?? [];
+  if (ids.length === 0) {
+    fail(ErrorCode.BAD_REQUEST, '至少要给一个节点 id');
+  }
+  const limit = params?.limit ?? DEFAULT_EXPORT_PLAN_LIMIT;
+
+  const targets: ExportTarget[] = [];
+  const missing: string[] = [];
+  const seen = new Set<string>();
+  let truncated = false;
+
+  const push = (node: SceneNode): void => {
+    if (seen.has(node.id)) return;
+    if (targets.length >= limit) {
+      truncated = true;
+      return;
+    }
+    seen.add(node.id);
+    targets.push(exportTargetOf(node));
+  };
+
+  for (const id of ids) {
+    const node = await figma.getNodeByIdAsync(id);
+    if (!node || !('type' in node) || node.type === 'PAGE' || node.type === 'DOCUMENT') {
+      // 页面本身不是切图对象，但递归时它的子孙可能是
+      if (params?.recursive && node && 'findAll' in node) {
+        for (const child of (node as PageNode).findAll(isExportMarked)) push(child);
+        continue;
+      }
+      missing.push(id);
+      continue;
+    }
+
+    const scene = node as SceneNode;
+    if (params?.recursive && 'findAll' in scene) {
+      // 根节点自己配了导出设置也要算上 —— findAll 不含自身
+      if (isExportMarked(scene)) push(scene);
+      for (const child of (scene as FrameNode).findAll(isExportMarked)) push(child);
+      // 一个都没标记时，退回到「就导这个节点本身」，避免静默返回空
+      if (targets.length === 0) push(scene);
+    } else {
+      push(scene);
+    }
+  }
+
+  const result: NodeExportPlanResult = { targets };
+  if (missing.length > 0) result.missing = missing;
+  if (truncated) result.truncated = true;
+  return result;
+}
+
+async function nodeExport(params: NodeExportParams): Promise<HandlerResult> {
+  const node = await requireNode(params.id);
+  if (!('exportAsync' in node)) {
+    fail(ErrorCode.UNSUPPORTED, `节点 ${params.id} (${node.type}) 不支持导出`);
+  }
+
+  const exportable = node as SceneNode & { exportAsync: SceneNode['exportAsync'] };
+  const width = 'width' in exportable ? exportable.width : 0;
+  const height = 'height' in exportable ? exportable.height : 0;
+  const format = params.format ?? 'PNG';
+
+  if ((format === 'PNG' || format === 'JPG') && (width <= 0 || height <= 0)) {
+    fail(ErrorCode.UNSUPPORTED, `节点 ${params.id} 尺寸为 0，无法导出位图`);
+  }
+
+  // 切图不套 MAX_IMAGE_DIMENSION —— 那是「给模型看」的省流上限，
+  // 用在切图上会把 @3x 悄悄降成别的倍率，产出尺寸不对的资源。
+  const scale = Math.max(0.01, Math.min(4, params.scale ?? 1));
+
+  let bytes: Uint8Array;
+  let mime: string;
+
+  if (format === 'SVG') {
+    bytes = await exportable.exportAsync({
+      format: 'SVG',
+      svgOutlineText: params.svgOutlineText ?? true,
+      svgIdAttribute: params.svgIdAttribute ?? false,
+      svgSimplifyStroke: params.svgSimplifyStroke ?? true,
+    });
+    mime = 'image/svg+xml';
+  } else if (format === 'PDF') {
+    bytes = await exportable.exportAsync({ format: 'PDF' });
+    mime = 'application/pdf';
+  } else {
+    bytes = await exportable.exportAsync({
+      format,
+      constraint: { type: 'SCALE', value: scale },
+    });
+    mime = format === 'PNG' ? 'image/png' : 'image/jpeg';
+  }
+
+  const vector = format === 'SVG' || format === 'PDF';
+  const result: NodeExportResult = {
+    mime,
+    format,
+    width: Math.round(width * (vector ? 1 : scale)),
+    height: Math.round(height * (vector ? 1 : scale)),
+    scale: vector ? 1 : Math.round(scale * 1000) / 1000,
     byteLength: bytes.byteLength,
     chunkCount: 0, // 由 UI 侧分片后填入
   };

@@ -30,6 +30,7 @@
 |---|---|---|
 | **设计稿 → 代码** | 读取选中 Frame 的布局/样式/文本，输出结构化描述供 AI 生成前端代码 | ✅ |
 | **设计系统提取** | 导出变量、样式、组件清单，同步成代码里的 design token | ✅ |
+| **切图** | 按设计师配好的导出设置或指定格式/倍率，把资源导进项目目录 | ✅ |
 | 批量改稿 / 规范检查 | 批量替换文案、检查 token 使用一致性 | v2 |
 | AI 生成设计稿 | 自然语言驱动在 Figma 中创建页面 | v2 |
 
@@ -132,7 +133,8 @@ claude mcp add figma -s user -- node "$PWD/packages/server/dist/index.js"
 | `figma find <关键词>` | `search_nodes` | 按名称/类型定位 |
 | `figma node <id>...` | `get_node_detail` | 完整属性 |
 | `figma text [id]` | `get_text_content` | 抽取全部文案 |
-| `figma image <id>` | `get_node_image` | 导出 PNG |
+| `figma image <id>` | `get_node_image` | 导出 PNG（给模型看的截图） |
+| `figma export <id...>` | `export_assets` | 切图：PNG/JPG/SVG/PDF、多倍率、落到项目目录 |
 | `figma vars` | `get_variables` | 变量集合与各 mode 的值 |
 | `figma styles` | `get_styles` | Paint / Text / Effect / Grid |
 | `figma components` | `get_components` | 组件与变体清单 |

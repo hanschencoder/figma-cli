@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { CLIENT_HOST, HEALTH_PATH, PORTS, STATE_DIR } from '@figma-mcp/shared';
 import { CALL_PATH, SHUTDOWN_PATH } from './daemon.js';
-import { createTools, type ToolDef } from './tools/registry.js';
+import { absolutizePathArgs, createTools, type ToolDef } from './tools/registry.js';
 
 const BIN = 'figma';
 const SPAWN_TIMEOUT_MS = 15_000;
@@ -30,7 +30,7 @@ const TOOLS: ToolDef[] = createTools({ hub: null as never, router: null as never
 
 // ---------------------------------------------------------------- 参数解析
 
-type ArgKind = 'string' | 'number' | 'boolean' | 'string[]' | 'enum';
+type ArgKind = 'string' | 'number' | 'boolean' | 'string[]' | 'number[]' | 'enum';
 
 interface ArgSpec {
   key: string;
@@ -66,7 +66,10 @@ function specsOf(tool: ToolDef): ArgSpec[] {
 
     if (inner instanceof z.ZodNumber) kind = 'number';
     else if (inner instanceof z.ZodBoolean) kind = 'boolean';
-    else if (inner instanceof z.ZodArray) kind = 'string[]';
+    else if (inner instanceof z.ZodArray) {
+      const element = unwrap(inner._def.type as z.ZodTypeAny).inner;
+      kind = element instanceof z.ZodNumber ? 'number[]' : 'string[]';
+    }
     else if (inner instanceof z.ZodEnum) {
       kind = 'enum';
       choices = inner._def.values as string[];
@@ -161,11 +164,17 @@ function coerce(spec: ArgSpec, raw: string): unknown {
     if (Number.isNaN(n)) throw new UsageError(`--${spec.flag} 需要数字，收到 "${raw}"`);
     return n;
   }
-  if (spec.kind === 'string[]') {
-    return raw
+  if (spec.kind === 'string[]' || spec.kind === 'number[]') {
+    const parts = raw
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean);
+    if (spec.kind === 'string[]') return parts;
+    return parts.map((part) => {
+      const n = Number(part);
+      if (Number.isNaN(n)) throw new UsageError(`--${spec.flag} 需要数字列表，收到 "${part}"`);
+      return n;
+    });
   }
   return raw;
 }
@@ -223,7 +232,9 @@ function helpTool(tool: ToolDef): string {
           ? ` <${s.choices?.join('|')}>`
           : s.kind === 'string[]'
             ? ' <a,b,c>'
-            : s.kind === 'number'
+            : s.kind === 'number[]'
+              ? ' <1,2,3>'
+              : s.kind === 'number'
               ? ' <n>'
               : ' <值>';
     return { left: `  --${s.flag}${value}`, desc: s.desc + (s.required ? '（必填）' : '') };
@@ -445,7 +456,8 @@ async function main(): Promise<number> {
 
   let args: Record<string, unknown>;
   try {
-    args = parseArgs(tool, rest);
+    // 路径参数在这里定死成绝对路径：daemon 的 cwd 和用户此刻在哪没有关系
+    args = absolutizePathArgs(tool, parseArgs(tool, rest));
   } catch (err) {
     if (err instanceof UsageError) {
       console.error(`${err.message}\n`);

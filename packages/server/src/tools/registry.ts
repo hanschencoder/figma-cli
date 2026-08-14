@@ -8,15 +8,20 @@
  * 输出一律是**文本 DSL**而不是 JSON —— 同样的信息能省 5–10 倍 token。
  */
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { z } from 'zod';
 import {
   IMAGE_REQUEST_TIMEOUT_MS,
   MAX_IMAGE_DIMENSION,
   Method,
   STATE_DIR,
+  type ExportFormat,
+  type ExportSpec,
+  type ExportTarget,
+  type NodeExportPlanResult,
+  type NodeExportResult,
 } from '@figma-mcp/shared';
 import { BridgeError, type Hub } from '../hub.js';
 import { log } from '../logger.js';
@@ -74,7 +79,31 @@ export interface ToolDef {
   positional?: string[];
   /** 最后一个位置参数是否可变长（收集成数组） */
   variadic?: boolean;
+  /**
+   * 值是文件路径的参数名。
+   *
+   * tool 跑在 daemon 里，daemon 的 cwd 是它被拉起来时那个目录，跟用户此刻在哪
+   * 毫无关系。所以相对路径必须由**前端**（CLI / MCP）在自己的进程里解析成绝对
+   * 路径再发出去，见 absolutizePathArgs。
+   */
+  pathArgs?: string[];
   run(args: Record<string, unknown>): Promise<ToolResult>;
+}
+
+/** 前端调用：把 pathArgs 里的相对路径按**当前进程**的 cwd 解析成绝对路径。 */
+export function absolutizePathArgs(
+  tool: ToolDef,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!tool.pathArgs?.length) return args;
+  const out = { ...args };
+  for (const key of tool.pathArgs) {
+    const value = out[key];
+    if (typeof value === 'string' && value && !isAbsolute(value)) {
+      out[key] = resolve(process.cwd(), value);
+    }
+  }
+  return out;
 }
 
 export interface ToolContext {
@@ -373,6 +402,133 @@ export function createTools(ctx: ToolContext): ToolDef[] {
         }),
     },
 
+    {
+      name: 'export_assets',
+      cli: 'export',
+      title: '切图导出',
+      description:
+        '把节点导出成可以直接进项目的资源文件：PNG / JPG / SVG / PDF，支持多倍率。\n' +
+        '与 get_node_image 的区别：那个是**给模型看**的截图（有长边上限、落在临时目录），' +
+        '这个是**给工程用**的切图（原始尺寸、按图层名命名、落到 --out 指定的目录）。\n' +
+        '不指定 --format 时，优先按设计师在 Figma 里配好的导出设置来 —— ' +
+        '格式、倍率、文件名后缀都听设计稿的。\n' +
+        '典型用法：\n' +
+        '  export 12:34 --format SVG --out ./src/assets/icons\n' +
+        '  export 12:34 --format PNG --scales 1,2,3 --out ./assets\n' +
+        '  export 8:12 --recursive --out ./assets   # 一个 Frame 下配了导出设置的图标全切出来',
+      schema: {
+        ...docIdArg,
+        ids: z.array(z.string()).min(1).describe('要导出的节点 id，可给多个'),
+        out: z
+          .string()
+          .default('figma-exports')
+          .describe('输出目录，相对路径按当前工作目录解析；默认 ./figma-exports'),
+        format: z
+          .enum(['PNG', 'JPG', 'SVG', 'PDF'])
+          .optional()
+          .describe('覆盖节点自带的导出设置。省略且节点没配设置时用 PNG'),
+        scales: z
+          .array(z.number().min(0.1).max(4))
+          .optional()
+          .describe('导出倍率，逗号分隔如 1,2,3；仅 PNG/JPG 有意义，默认 1'),
+        recursive: z
+          .boolean()
+          .optional()
+          .describe('递归收集子孙节点里配了导出设置的和 SLICE —— 一次切整套图标'),
+        useSettings: z
+          .boolean()
+          .optional()
+          .describe('是否采用节点自带的导出设置，默认 true；给了 --format 时自动失效'),
+        svgOutlineText: z
+          .boolean()
+          .optional()
+          .describe('SVG 文字转曲，默认 true。要在代码里改文案就 --no-svg-outline-text'),
+        svgIdAttribute: z.boolean().optional().describe('SVG 图层带 id 属性，便于 CSS 命中'),
+        svgSimplifyStroke: z.boolean().optional().describe('SVG 简化描边，默认 true'),
+      },
+      positional: ['ids'],
+      variadic: true,
+      pathArgs: ['out'],
+      run: async (args) =>
+        guard(async () => {
+          const target = router.resolve(args.docId as string | undefined);
+          const ids = args.ids as string[];
+          const format = args.format as ExportFormat | undefined;
+          const scales = (args.scales as number[] | undefined) ?? [1];
+          const useSettings = format ? false : (args.useSettings as boolean | undefined) ?? true;
+
+          const { result: plan } = await hub.request(
+            target,
+            Method.NodeExportPlan,
+            { ids, recursive: args.recursive as boolean | undefined },
+            { timeoutMs: IMAGE_REQUEST_TIMEOUT_MS },
+          );
+
+          const planned = plan as NodeExportPlanResult;
+          if (planned.targets.length === 0) {
+            return failure(
+              `没有可导出的节点。missing=${(planned.missing ?? []).join(', ') || '无'}\n` +
+                '如果给的是 Frame 且想切它内部的图标，加 --recursive',
+            );
+          }
+
+          const dir = outputDir(args.out as string | undefined);
+          const lines: string[] = [];
+          const used = new Set<string>();
+          let total = 0;
+          let bytes = 0;
+
+          for (const item of planned.targets) {
+            for (const spec of specsFor(item, { format, scales, useSettings })) {
+              if (total >= MAX_EXPORT_JOBS) {
+                lines.push(`… 达到单次 ${MAX_EXPORT_JOBS} 个文件的上限，其余未导出`);
+                break;
+              }
+
+              const { result, data } = await hub.request(
+                target,
+                Method.NodeExport,
+                {
+                  id: item.id,
+                  format: spec.format,
+                  scale: spec.scale,
+                  svgOutlineText: args.svgOutlineText as boolean | undefined,
+                  svgIdAttribute: args.svgIdAttribute as boolean | undefined,
+                  svgSimplifyStroke: args.svgSimplifyStroke as boolean | undefined,
+                },
+                { timeoutMs: IMAGE_REQUEST_TIMEOUT_MS },
+              );
+              if (!data) {
+                lines.push(`✗ ${item.name} (${spec.format}) 插件没有回传数据`);
+                continue;
+              }
+
+              const exported = result as NodeExportResult;
+              const path = writeAsset(dir, assetName(item, spec, exported, used), data);
+              if (!path) {
+                lines.push(`✗ ${item.name} (${spec.format}) 落盘失败`);
+                continue;
+              }
+
+              total++;
+              bytes += data.byteLength;
+              lines.push(
+                `${path}  ${exported.format} ${exported.width}x${exported.height} ` +
+                  `${(data.byteLength / 1024).toFixed(1)}KB`,
+              );
+            }
+          }
+
+          const head = `导出 ${total} 个文件到 ${dir}  合计 ${(bytes / 1024).toFixed(1)}KB`;
+          const tail: string[] = [];
+          if (planned.missing?.length) tail.push(`找不到的 id：${planned.missing.join(', ')}`);
+          if (planned.truncated) tail.push('清点结果被截断，节点太多，建议缩小范围');
+          if (total === 0) return failure([head, ...lines, ...tail].join('\n'));
+
+          return ok([head, ...lines, ...tail].join('\n'));
+        }),
+    },
+
     // ---------------------------------------------------------- 设计系统
     {
       name: 'get_variables',
@@ -458,6 +614,101 @@ export function createTools(ctx: ToolContext): ToolDef[] {
  * 对 CLI 来说这不是"调试副本"而是唯一的交付方式 —— 命令行没法把图片
  * 直接塞给模型，只能给路径让它自己去读。
  */
+/** 单次切图的文件数上限。防止在整页上误用 --recursive 刷出几百个文件。 */
+const MAX_EXPORT_JOBS = 200;
+
+const EXTENSION: Record<ExportFormat, string> = {
+  PNG: 'png',
+  JPG: 'jpg',
+  SVG: 'svg',
+  PDF: 'pdf',
+};
+
+/**
+ * 决定一个节点要导出哪几份。
+ *
+ * 优先级：显式 --format > 节点自带的导出设置 > PNG。
+ * 「节点自带的设置」排在默认值前面，是因为那是设计师明确表达过的意图 ——
+ * 他配了 SVG + @2x PNG，就说明这个图标两种都要。
+ */
+function specsFor(
+  target: ExportTarget,
+  opts: { format?: ExportFormat; scales: number[]; useSettings: boolean },
+): ExportSpec[] {
+  if (opts.format) {
+    // 矢量格式没有倍率概念，出一份就够
+    if (opts.format === 'SVG' || opts.format === 'PDF') return [{ format: opts.format }];
+    return opts.scales.map((scale) => ({ format: opts.format!, scale }));
+  }
+  if (opts.useSettings && target.settings.length > 0) return target.settings;
+  return opts.scales.map((scale) => ({ format: 'PNG' as const, scale }));
+}
+
+/**
+ * 文件名：图层名 + 后缀 + 扩展名。
+ *
+ * 后缀优先用 Figma 里配的（设计师写了 "@2x" / "-dark" 就照抄），
+ * 没配则按倍率补 @2x。重名时加序号，绝不静默覆盖。
+ */
+function assetName(
+  target: ExportTarget,
+  spec: ExportSpec,
+  exported: NodeExportResult,
+  used: Set<string>,
+): string {
+  const base = sanitizeName(target.name) || sanitizeName(target.id) || 'asset';
+  const scale = spec.scale ?? exported.scale;
+  const suffix = spec.suffix ?? (scale && scale !== 1 ? `@${trimNumber(scale)}x` : '');
+  const ext = EXTENSION[exported.format];
+
+  // 去重序号插在倍率后缀之前，让同一个资源的各倍率仍然连在一起：
+  // icon-search-2.png / icon-search-2@2x.png，而不是 icon-search@2x-2.png
+  let name = `${base}${suffix}.${ext}`;
+  let n = 2;
+  while (used.has(name)) name = `${base}-${n++}${suffix}.${ext}`;
+  used.add(name);
+  return name;
+}
+
+/** 图层名直接当文件名不安全：可能有斜杠、空格、emoji、以及 Icon/Search 这种路径式命名。 */
+function sanitizeName(name: string): string {
+  return name
+    .trim()
+    .replace(/[\/\\]+/g, '-')
+    .replace(/\s+/g, '-')
+    .replace(/[^\w.@-]/g, '')
+    .replace(/-{2,}/g, '-')
+    .replace(/^[-.]+|[-.]+$/g, '');
+}
+
+function trimNumber(n: number): string {
+  return String(Math.round(n * 100) / 100);
+}
+
+/**
+ * 输出目录。相对路径本该由前端解析掉（见 absolutizePathArgs）；
+ * 万一还是相对的（比如有人直接 curl /call），退回到状态目录，
+ * 绝不拿 daemon 那个不可预期的 cwd 去写文件。
+ */
+function outputDir(out: string | undefined): string {
+  if (out && isAbsolute(out)) return out;
+  // 相对路径本该由前端解析掉，走到这里说明调用方绕过了前端
+  const fallback = join(homedir(), STATE_DIR, 'exports');
+  return out ? join(fallback, out) : fallback;
+}
+
+function writeAsset(dir: string, name: string, data: Buffer): string | undefined {
+  try {
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const path = join(dir, name);
+    writeFileSync(path, data);
+    return path;
+  } catch (err) {
+    log.error('切图落盘失败:', String(err));
+    return undefined;
+  }
+}
+
 function saveExport(nodeId: string, mime: string, data: Buffer): string | undefined {
   try {
     const dir = join(homedir(), STATE_DIR, 'exports');

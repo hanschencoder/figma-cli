@@ -127,6 +127,10 @@ export const Method = {
   NodeText: 'node.text',
   /** 渲染节点为图片 */
   NodeImage: 'node.image',
+  /** 切图前的清点：节点尺寸 + 设计师配好的导出设置 */
+  NodeExportPlan: 'node.exportPlan',
+  /** 按指定格式导出一份资源 */
+  NodeExport: 'node.export',
   /** 变量集合 */
   DsVariables: 'ds.variables',
   /** 样式 */
@@ -224,6 +228,71 @@ export interface NodeImageResult {
   chunkCount: number;
 }
 
+/**
+ * 切图支持的格式。PNG/JPG 走倍率，SVG/PDF 是矢量，倍率无意义。
+ */
+export type ExportFormat = 'PNG' | 'JPG' | 'SVG' | 'PDF';
+
+/** 一次导出任务：出什么格式、什么倍率、文件名带什么后缀。 */
+export interface ExportSpec {
+  format: ExportFormat;
+  /** 仅 PNG/JPG。Figma 里配的 WIDTH/HEIGHT 约束会先换算成等效倍率 */
+  scale?: number;
+  /** 设计师在 Figma 导出设置里写的后缀，如 "@2x" / "-dark" */
+  suffix?: string;
+}
+
+export interface NodeExportPlanParams {
+  ids: string[];
+  /**
+   * 递归收集子孙节点里**配了导出设置的**和 SLICE。
+   * 设计稿里图标通常挂在某个 Frame 下面，这样一次就能把整套切出来。
+   */
+  recursive?: boolean;
+  limit?: number;
+}
+
+export interface ExportTarget {
+  id: string;
+  name: string;
+  type: string;
+  width: number;
+  height: number;
+  /** 节点自带的导出设置，没配就是空数组 */
+  settings: ExportSpec[];
+}
+
+export interface NodeExportPlanResult {
+  targets: ExportTarget[];
+  missing?: string[];
+  truncated?: boolean;
+}
+
+export interface NodeExportParams {
+  id: string;
+  format: ExportFormat;
+  /** 仅 PNG/JPG 生效 */
+  scale?: number;
+  /** SVG：文字转曲，默认 true（Figma 默认值）。要在代码里改文案就设 false */
+  svgOutlineText?: boolean;
+  /** SVG：给图层加 id 属性，方便 CSS 命中 */
+  svgIdAttribute?: boolean;
+  /** SVG：简化描边，默认 true */
+  svgSimplifyStroke?: boolean;
+}
+
+export interface NodeExportResult {
+  mime: string;
+  format: ExportFormat;
+  /** 矢量格式下就是节点自身尺寸 */
+  width: number;
+  height: number;
+  scale: number;
+  byteLength: number;
+  /** 数据通过同 id 的 chunk 消息传输 */
+  chunkCount: number;
+}
+
 export interface DsVariablesParams {
   /** 只取某个集合 */
   collectionId?: string;
@@ -266,6 +335,8 @@ export interface MethodContract {
   [Method.NodeSearch]: [NodeSearchParams, NodeSearchResult];
   [Method.NodeText]: [NodeTextParams, NodeTextResult];
   [Method.NodeImage]: [NodeImageParams, NodeImageResult];
+  [Method.NodeExportPlan]: [NodeExportPlanParams, NodeExportPlanResult];
+  [Method.NodeExport]: [NodeExportParams, NodeExportResult];
   [Method.DsVariables]: [DsVariablesParams, DsVariablesResult];
   [Method.DsStyles]: [DsStylesParams, DsStylesResult];
   [Method.DsComponents]: [DsComponentsParams, DsComponentsResult];

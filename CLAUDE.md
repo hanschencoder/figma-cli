@@ -39,6 +39,10 @@ npm run setup          # = bash scripts/install.sh，安装/更新 CLI 与 skill
 （opacity=1、visible=true、rotation=0…）。加字段前先估算它在典型设计稿上多产生多少
 token。组件实例内部默认不展开、文本图层名与内容重复时只输出一次，都是这条的产物。
 
+**路径参数必须由前端解析成绝对路径。** tool 跑在 daemon 里，daemon 的 cwd 是它被
+拉起来时那个目录，跟用户此刻在哪毫无关系。要接收路径的 tool 在 `ToolDef.pathArgs`
+里声明参数名，CLI 和 MCP 各自调 `absolutizePathArgs` 解析后再发出去。
+
 **不静默猜测目标文档。** `router.ts`：单连接自动选，多连接未指定时报错并列出候选。
 
 **输出格式改 `server/src/dsl.ts`，不要改插件。** 插件改一行要重新 build 加在 Figma

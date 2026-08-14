@@ -21,6 +21,7 @@ daemon 会在首次执行时自动拉起，不需要你管。
 figma ctx                      # 1. 先看用户选中了什么
 figma tree --depth 3           # 2. 读选中项的结构
 figma image <id>               # 3. 需要看视觉效果时导出截图
+figma export <id> --out ./assets  # 3'. 需要资源文件（图标/插图）时切图
 figma node <id> [<id>...]      # 4. 对关键节点精读完整属性
 figma vars && figma styles     # 5. 需要 design token 时
 ```
@@ -91,6 +92,27 @@ figma text <id>                # 子树全部文本，含图层名
 
 生成代码后再导一次对照还原度，比凭 DSL 想象靠谱。
 
+## 切图
+
+`figma export` 是给工程用的，和 `figma image` 不是一回事：前者原始尺寸、按图层名
+命名、落到项目目录；后者有长边上限、落在临时目录，只是给你看一眼。
+
+```bash
+figma export <id> --out ./src/assets/icons                 # 按设计稿里配好的导出设置
+figma export <id> --format SVG --out ./src/assets/icons    # 指定格式
+figma export <id> --format PNG --scales 1,2,3 --out ./assets
+figma export <frameId> --recursive --out ./assets          # 整个 Frame 下的图标一次切完
+```
+
+**优先不带 `--format`。** 设计师在 Figma 里配的导出设置（格式 / 倍率 / 文件名后缀）
+就是他的交付意图，照做即可；只有在设计稿没配、或用户明确要别的格式时才覆盖。
+
+- 图标用 SVG。文案要在代码里改的，加 `--no-svg-outline-text` 保留文本不转曲。
+- 位图倍率：Web 通常 `1,2`，移动端 `2,3`。
+- 文件名来自图层名（`icon / search` → `icon-search.svg`），同名自动加序号。
+  名字不合适就先在 Figma 里改图层名，别在代码里改文件名。
+- 导出前先 `figma find` 或 `figma tree` 拿到 id，别猜。
+
 ## 命令速查
 
 | 命令 | 用途 |
@@ -100,7 +122,8 @@ figma text <id>                # 子树全部文本，含图层名
 | `figma find <关键词>` | 按图层名或类型定位节点 |
 | `figma node <id>...` | 完整属性（描边、阴影、约束、富文本分段） |
 | `figma text [id]` | 抽取全部文案 |
-| `figma image <id>` | 导出 PNG |
+| `figma image <id>` | 导出 PNG 截图（给自己看） |
+| `figma export <id...>` | 切图：PNG/JPG/SVG/PDF、多倍率、落到项目目录 |
 | `figma vars` | 变量集合与各 mode 的值 |
 | `figma styles` | Paint / Text / Effect / Grid 样式 |
 | `figma components` | 组件与变体清单 |

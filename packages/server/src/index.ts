@@ -17,7 +17,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { startDaemon } from './daemon.js';
 import { SERVER_VERSION } from './hub.js';
 import { log } from './logger.js';
-import type { ToolDef } from './tools/registry.js';
+import { absolutizePathArgs, type ToolDef } from './tools/registry.js';
 
 async function main(): Promise<void> {
   const daemon = await startDaemon();
@@ -55,7 +55,8 @@ function register(server: McpServer, tool: ToolDef): void {
     tool.name,
     { title: tool.title, description: tool.description, inputSchema: tool.schema },
     async (args: Record<string, unknown>) => {
-      const result = await tool.run(args);
+      // 与 CLI 同理：相对路径按 MCP server 进程的 cwd 解析，不能留给 daemon
+      const result = await tool.run(absolutizePathArgs(tool, args));
       const content: CallToolResult['content'] = [{ type: 'text', text: result.text }];
 
       // MCP 能直接内联图片，比 CLI 让模型自己去 Read 文件少一步

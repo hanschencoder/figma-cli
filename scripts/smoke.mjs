@@ -10,6 +10,9 @@
  */
 
 import { execFile, spawn } from 'node:child_process';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, relative } from 'node:path';
 import { promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
 import { WebSocket } from 'ws';
@@ -88,6 +91,8 @@ const TINY_PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
   'base64',
 );
+
+const TINY_SVG = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"/>', 'utf8');
 
 const RESPONSES = {
   'doc.context': () => ({
@@ -233,6 +238,46 @@ function connectFakePlugin(port) {
 
       if (msg.type !== 'req') return;
 
+      if (msg.method === 'node.exportPlan') {
+        // 一个配了导出设置（SVG + @2x PNG）的图标，一个什么都没配的
+        ws.send(JSON.stringify({
+          type: 'res', id: msg.id, ok: true,
+          result: {
+            targets: [
+              {
+                id: '12:35', name: 'icon / search', type: 'FRAME', width: 24, height: 24,
+                settings: [{ format: 'SVG' }, { format: 'PNG', scale: 2, suffix: '@2x' }],
+              },
+              // 同名图层：文件名必须自动去重，不能互相覆盖
+              { id: '12:36', name: 'icon / search', type: 'FRAME', width: 24, height: 24, settings: [{ format: 'SVG' }] },
+              // 没配导出设置：走默认 PNG @1x
+              { id: '12:39', name: 'Plain Frame', type: 'FRAME', width: 48, height: 48, settings: [] },
+            ],
+          },
+        }));
+        return;
+      }
+
+      if (msg.method === 'node.export') {
+        const svg = msg.params.format === 'SVG';
+        const payload = svg ? TINY_SVG : TINY_PNG;
+        ws.send(JSON.stringify({
+          type: 'chunk', id: msg.id, index: 0, total: 1, data: payload.toString('base64'),
+        }));
+        ws.send(JSON.stringify({
+          type: 'res', id: msg.id, ok: true,
+          result: {
+            mime: svg ? 'image/svg+xml' : 'image/png',
+            format: msg.params.format,
+            width: 24, height: 24,
+            scale: svg ? 1 : (msg.params.scale ?? 1),
+            byteLength: payload.byteLength,
+            chunkCount: 1,
+          },
+        }));
+        return;
+      }
+
       if (msg.method === 'node.image') {
         const base64 = TINY_PNG.toString('base64');
         ws.send(JSON.stringify({ type: 'chunk', id: msg.id, index: 0, total: 1, data: base64 }));
@@ -291,7 +336,7 @@ async function main() {
     check('initialize', init.serverInfo?.name === 'figma-mcp', init.serverInfo?.version);
 
     const { tools } = await client.request('tools/list', {});
-    check('tools/list', tools.length === 11, `${tools.length} 个 tool`);
+    check('tools/list', tools.length === 12, `${tools.length} 个 tool`);
 
     // 目标文档不存在时应给出可操作的提示，而不是崩掉。
     // 不用「没有任何连接」来断言 —— Figma 开着时真实插件可能已经连上来了。
@@ -344,6 +389,37 @@ async function main() {
     check('CLI docs', (await cli(['docs'])).includes('Smoke Test File'));
     check('CLI tree 与 MCP 同源', (await cli(['tree', '--doc-id', DOC_ID])).includes('ProductCard'));
     check('CLI --help 不依赖 daemon', (await cli(['tree', '--help'])).includes('--expand-instances'));
+
+    // 切图：--out 用相对路径，验证它是按 CLI 的 cwd 解析而不是 daemon 的
+    const outA = mkdtempSync(join(tmpdir(), 'figma-smoke-'));
+    const bySettings = await cli([
+      'export', '12:35', '--recursive', '--out', relative(process.cwd(), outA), '--doc-id', DOC_ID,
+    ]);
+    check(
+      'CLI export 默认按节点自带的导出设置切图',
+      readdirSync(outA).sort().join(' ') ===
+        'Plain-Frame.png icon-search-2.svg icon-search.svg icon-search@2x.png',
+      readdirSync(outA).sort().join(' '),
+    );
+    check('CLI export 同名图层自动去重', readdirSync(outA).includes('icon-search-2.svg'));
+    check('CLI export 输出落在 CLI 的 cwd 下而不是 daemon 的', bySettings.includes(outA));
+
+    const outB = mkdtempSync(join(tmpdir(), 'figma-smoke-'));
+    await cli([
+      'export', '12:35', '--format', 'PNG', '--scales', '1,2,3',
+      '--out', relative(process.cwd(), outB), '--doc-id', DOC_ID,
+    ]);
+    check(
+      'CLI export --format/--scales 覆盖设置',
+      readdirSync(outB).sort().join(' ') ===
+        'Plain-Frame.png Plain-Frame@2x.png Plain-Frame@3x.png ' +
+        'icon-search-2.png icon-search-2@2x.png icon-search-2@3x.png ' +
+        'icon-search.png icon-search@2x.png icon-search@3x.png',
+      readdirSync(outB).sort().join(' '),
+    );
+
+    rmSync(outA, { recursive: true, force: true });
+    rmSync(outB, { recursive: true, force: true });
 
     ws.close();
   } finally {
