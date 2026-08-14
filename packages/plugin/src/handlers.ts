@@ -453,13 +453,16 @@ async function nodeExport(params: NodeExportParams): Promise<HandlerResult> {
 
 async function dsVariables(params: DsVariablesParams): Promise<DsVariablesResult> {
   const cache = new ResolveCache();
-  const { collections, truncated } = await collectVariables(cache, {
+  const { collections, truncated, libraryError } = await collectVariables(cache, {
     collectionId: params?.collectionId,
     expand: params?.expand ?? true,
     limit: params?.limit ?? DEFAULT_VARIABLE_LIMIT,
+    library: params?.library,
+    values: params?.values,
   });
   const result: DsVariablesResult = { collections };
   if (truncated) result.truncated = true;
+  if (libraryError) result.libraryError = libraryError;
   return result;
 }
 

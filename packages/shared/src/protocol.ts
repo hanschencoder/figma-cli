@@ -299,10 +299,21 @@ export interface DsVariablesParams {
   /** 是否展开变量明细；false 时只返回集合摘要 */
   expand?: boolean;
   limit?: number;
+  /** 是否连带列出外部 Library 的变量集合，默认 true */
+  library?: boolean;
+  /**
+   * 解析 Library 变量各 mode 的值。
+   *
+   * 需要逐个 importVariableByKeyAsync，一个变量一次调用，几百个变量会很慢，
+   * 所以默认关闭 —— 只列清单（名字 + 类型）已经够把设计稿里的 $name 对上号了。
+   */
+  values?: boolean;
 }
 export interface DsVariablesResult {
   collections: VariableCollectionInfo[];
   truncated?: boolean;
+  /** teamLibrary 读不到时的原因（个人文件、权限、组织策略…），不影响本地集合 */
+  libraryError?: string;
 }
 
 export interface DsStylesParams {

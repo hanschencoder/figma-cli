@@ -246,8 +246,14 @@ export interface VariableCollectionInfo {
   id: string;
   name: string;
   remote?: boolean;
+  /**
+   * 来自外部 Library 时的库名。
+   * 这类集合只能从 teamLibrary API 拿到清单，拿不到 modes ——
+   * 除非再逐个 import 变量把值解析出来（见 DsVariablesParams.values）。
+   */
+  libraryName?: string;
   modes: { id: string; name: string }[];
-  defaultModeId: string;
+  defaultModeId?: string;
   variableCount: number;
   /** 未展开时省略 */
   variables?: VariableInfo[];

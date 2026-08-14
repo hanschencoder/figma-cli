@@ -141,7 +141,7 @@ figma export <frameId> --recursive --out ./assets          # 整个 Frame 下的
 | `figma text [id]` | 抽取全部文案 |
 | `figma image <id>` | 导出 PNG 截图（给自己看） |
 | `figma export <id...>` | 切图：PNG/JPG/SVG/PDF、多倍率、落到项目目录 |
-| `figma vars` | 变量集合与各 mode 的值 |
+| `figma vars` | 变量集合。本地集合含各 mode 的值；外部 Library 只列清单，加 `--values` 才解析值 |
 | `figma styles` | Paint / Text / Effect / Grid 样式 |
 | `figma components` | 组件与变体清单 |
 | `figma docs` / `figma use <docId>` | 多文档时切换目标 |
@@ -157,4 +157,4 @@ figma export <frameId> --recursive --out ./assets          # 整个 Frame 下的
 | `AMBIGUOUS_DOCUMENT` | 开了多个文档，`figma docs` 看列表后 `figma use <docId>` |
 | `TIMEOUT` | 文件太大，缩小 `--depth` / `--limit` 重试 |
 | `figma: command not found` | 在项目目录跑 `bash scripts/install.sh` |
-| 变量/样式为空 | token 定义在独立 Library 文件里。节点上的 `$name` 引用照常可用；要完整定义得在那个 Library 文件里跑插件 |
+| `figma vars` 只有清单没有值 | 那些集合来自外部 Library，值要 `figma vars --values` 逐个解析（慢）。节点上的 `$name` 引用本来就够当 token 名用 |

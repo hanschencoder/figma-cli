@@ -250,22 +250,34 @@ MCP 前端仍然保留（`packages/server/dist/index.js`），但主推 CLI + sk
 - **先定位再细看** —— `figma find` 找到目标再 `figma node`，避免全树遍历
 - **落盘再检索** —— 大树重定向到文件后 grep，只把命中行读进上下文（这是 CLI 相对 MCP 的核心优势）
 
-### 4. 远端变量只做引用还原
+### 4. 远端变量分两条路取
 
-`figma.variables.getLocalVariableCollections()` 只能拿到**本地**变量集合。如果 token 定义在独立的 Library 文件里，业务稿引用的是远端变量。
+`figma.variables.getLocalVariableCollectionsAsync()` 只能拿到**本地**变量集合。而真实项目里 token 基本都定义在独立的 Library 文件中，业务稿引用的全是远端变量 —— 只看本地集合的话，`figma vars` 在绝大多数设计稿上都是空的。
 
-v1 的策略是**不追求导出远端 Library 的完整定义**，只做本文件内的引用还原：
+所以两条路都走：
+
+**被引用的远端变量**，从节点反查，能拿到确切的值：
 
 ```
 node.boundVariables.fills[0].id
   → figma.variables.getVariableByIdAsync(id)   // 远端变量也能拿到 name
   → variable.resolveForConsumer(node)          // 按消费者节点的 mode 上下文求值
-  → 输出:  fill=$color/brand (#0A84FF)
+  → 输出:  fill: $color/brand
 ```
 
 `resolveForConsumer` 正好是为这个场景设计的，对远端变量同样有效。Style 同理走 `getStyleByIdAsync` 拿 name。
 
-`figma vars` 分两档：本地集合给完整结构（含所有 mode）；远端变量只在被引用时以「名字 + 解析值」出现。
+**Library 的完整清单**，走 `figma.teamLibrary`（manifest 需要 `teamlibrary` 权限）：
+
+```
+getAvailableLibraryVariableCollectionsAsync()   // 集合名 + libraryName + key
+  → getVariablesInLibraryCollectionAsync(key)   // 变量名 + 类型，没有值也没有 mode
+  → importVariableByKeyAsync(key)               // 要值只能逐个 import，慢
+```
+
+清单是免费的，值不是 —— 每个变量一次 `importVariableByKeyAsync`，几百个变量就是几百次调用。所以 `figma vars` 默认只列清单，`--values` 才去解析值。设计稿里的 `$name` 靠清单就能对上号，多数时候够用。
+
+个人草稿文件、没有 teamlibrary 权限、组织策略限制都会让 teamLibrary API 报错。这不该让整条命令失败：本地集合照常输出，读不到的原因追加成一行注释。
 
 ### 5. 图像作为核心能力
 

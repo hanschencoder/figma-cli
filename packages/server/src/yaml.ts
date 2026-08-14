@@ -609,8 +609,8 @@ export function serializeVariables(collections: VariableCollectionInfo[]): strin
       ['collections', []],
       [
         'hint',
-        '本文件没有本地变量集合。如果 design token 定义在独立的 Library 文件里，' +
-          '请在那个文件里运行插件；本文件引用的远端变量仍会在节点输出里以 $name 出现',
+        '这个文件既没有本地变量集合，也读不到外部 Library 的集合。' +
+          '设计稿里出现的 $name 仍然可以直接当 design token 名用',
       ],
     ]);
   }
@@ -623,9 +623,11 @@ export function serializeVariables(collections: VariableCollectionInfo[]): strin
         const f = new Fields();
         f.set('name', collection.name);
         f.set('id', collection.id);
-        f.set('modes', flow(modes));
+        // 外部 Library 的集合拿不到 modes，除非解析了值
+        if (modes.length > 0) f.set('modes', flow(modes));
         f.set('variableCount', collection.variableCount);
-        if (collection.remote) f.set('library', true);
+        f.set('library', collection.libraryName);
+        if (collection.remote && !collection.libraryName) f.set('remote', true);
 
         const variables = collection.variables ?? [];
         if (variables.length > 0) {
@@ -647,7 +649,9 @@ export function serializeVariables(collections: VariableCollectionInfo[]): strin
                   return [mode, text] as Entry;
                 })
                 .filter((entry): entry is Entry => entry !== undefined);
-              if (values.length > 0) v.set('values', flow(values));
+              // 单 mode 时键名没信息量，直接给值
+              if (values.length === 1) v.set('value', values[0]![1]);
+              else if (values.length > 1) v.set('values', flow(values));
               v.set('desc', variable.description);
               return flow(v.build());
             }),

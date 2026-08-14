@@ -599,15 +599,22 @@ export function createTools(ctx: ToolContext): ToolDef[] {
       cli: 'vars',
       title: '导出设计变量',
       description:
-        '导出本文件的变量集合与各 mode 的值，用于同步成代码里的 design token。\n' +
-        '注意：只能拿到**本地**集合。如果 token 定义在独立的 Library 文件里，' +
-        '需要在那个文件里运行插件；本文件中被引用的远端变量会在节点输出里以 $name 出现。\n' +
+        '导出变量集合，用于同步成代码里的 design token。\n' +
+        '**本地集合**给出各 mode 的完整值；**外部 Library 的集合**默认只给清单' +
+        '（集合名 / 变量名 / 类型）—— 那是 teamLibrary API 的上限。\n' +
+        '要 Library 变量的具体值就加 values：会逐个 import 变量，几百个变量会明显变慢，' +
+        '所以默认关闭。设计稿里的 $name 靠清单就能对上号，多数时候不需要值。\n' +
         '输出中 `→$other` 表示该变量别名指向另一个变量。',
       schema: {
         ...docIdArg,
-        collectionId: z.string().optional().describe('只导出某个集合'),
+        collectionId: z.string().optional().describe('只导出某个集合（本地集合的 id）'),
         expand: z.boolean().optional().describe('展开变量明细，默认 true'),
         limit: z.number().int().min(1).max(5000).optional().describe('每集合变量上限，默认 800'),
+        library: z.boolean().optional().describe('连带列出外部 Library 的集合，默认 true'),
+        values: z
+          .boolean()
+          .optional()
+          .describe('解析 Library 变量各 mode 的值（逐个 import，慢），默认 false'),
       },
       run: async (args) =>
         guard(async () => {
@@ -616,9 +623,22 @@ export function createTools(ctx: ToolContext): ToolDef[] {
             collectionId: args.collectionId as string | undefined,
             expand: args.expand as boolean | undefined,
             limit: args.limit as number | undefined,
+            library: args.library as boolean | undefined,
+            values: args.values as boolean | undefined,
           });
-          const body = serializeVariables(result.collections);
-          return ok(result.truncated ? body + note('变量数量超过上限，已截断') : body);
+          let body = serializeVariables(result.collections);
+          if (result.truncated) body += note('变量数量超过上限，已截断');
+          if (result.libraryError) {
+            body += note(`读不到外部 Library 的变量：${result.libraryError}`);
+          }
+          // 只列了清单没给值时说一句，否则用户会以为是坏了
+          if (
+            !args.values &&
+            result.collections.some((c) => c.libraryName !== undefined)
+          ) {
+            body += note('Library 变量只列了清单，要各 mode 的具体值加 --values（较慢）');
+          }
+          return ok(body);
         }),
     },
 
