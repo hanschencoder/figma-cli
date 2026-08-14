@@ -41,31 +41,38 @@
 
 **前置条件**：Node ≥ 20、Figma **桌面版**（浏览器版连 `ws://localhost` 在部分浏览器上不可靠）。
 
-### 1. 构建
+### 1. 安装
 
 ```bash
-npm install
-npm run build
+git clone <仓库地址> && cd figma-mcp
+bash scripts/install.sh
 ```
 
-`manifest.json` 由构建脚本从端口段常量生成 —— 不要手改，改了会和 `config.ts` 漂移。
+一条命令做完：装依赖 → 构建三个包 → 把 `figma` 命令链到 PATH → 把 skill 链到
+`~/.claude/skills/figma` → 停掉可能还在跑的旧 daemon。
+
+**更新就是再跑一遍**（`git pull && bash scripts/install.sh`），脚本会认出已装版本、
+接着更新。skill 是软链，跟着仓库走，不用单独管。
+
+```bash
+bash scripts/install.sh --uninstall   # 卸载
+bash scripts/install.sh --force       # figma 命令 / skill 已被别的东西占用时接管（先备份）
+```
+
+> skill 装到别处：`FIGMA_SKILL_DIR=... bash scripts/install.sh`。
+> `manifest.json` 由构建从端口段常量生成 —— 不要手改，改了会和 `config.ts` 漂移。
 
 ### 2. 在 Figma 里导入插件
+
+这一步没法脚本化，Figma 只认手动导入，**装完一次就不用再管**：
 
 Figma **桌面版** → `Plugins` → `Development` → `Import plugin from manifest...`
 选择 `packages/plugin/manifest.json`。
 
 导入后在 `Plugins → Development → Figma MCP Bridge` 运行。插件面板会显示连接状态。
 
-> 改了插件代码只需重新 `npm run build:plugin` 并重开插件窗口；
-> **但改了 `manifest.json` 必须重新 Import** —— Figma 在应用级缓存插件文件。
-
-### 3. 安装 CLI 与 skill
-
-```bash
-npm link -w @figma-mcp/server                       # 把 figma 命令装到 PATH
-ln -s "$PWD/skills/figma" ~/.claude/skills/figma    # 装 skill（用户级，所有项目可用）
-```
+> 更新后插件代码可能变了，**关掉插件窗口重开**即可；
+> **只有 `manifest.json` 变了（端口段调整）才必须重新 Import** —— Figma 在应用级缓存插件文件。
 
 验证：
 
@@ -74,7 +81,7 @@ figma --help
 figma status
 ```
 
-### 4. 用起来
+### 3. 用起来
 
 ```bash
 figma ctx                      # 看用户选中了什么
@@ -286,7 +293,7 @@ figma-mcp/
 │  ├─ server/     daemon + WS Hub + tools 注册表 + DSL；两个前端 cli.ts / index.ts(MCP)
 │  └─ plugin/     manifest.json + code.ts（沙箱）+ ui.html/ui.ts
 ├─ skills/figma/  给 AI 的使用说明（软链到 ~/.claude/skills/）
-└─ scripts/       smoke.mjs 全链路冒烟
+└─ scripts/       install.sh 一键安装/更新 · smoke.mjs 全链路冒烟
 ```
 
 技术栈：TypeScript · `@modelcontextprotocol/sdk` · `@figma/plugin-typings` · esbuild · npm workspaces

@@ -116,5 +116,5 @@ figma text <id>                # 子树全部文本，含图层名
 | `NO_DOCUMENT` | 插件没运行，让用户在 Figma 里启动它 |
 | `AMBIGUOUS_DOCUMENT` | 开了多个文档，`figma docs` 看列表后 `figma use <docId>` |
 | `TIMEOUT` | 文件太大，缩小 `--depth` / `--limit` 重试 |
-| `figma: command not found` | 在项目目录跑 `npm link -w @figma-mcp/server` |
+| `figma: command not found` | 在项目目录跑 `bash scripts/install.sh` |
 | 变量/样式为空 | token 定义在独立 Library 文件里。节点上的 `$name` 引用照常可用；要完整定义得在那个 Library 文件里跑插件 |

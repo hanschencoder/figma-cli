@@ -12,6 +12,7 @@ npm run build:server   # 只改了 daemon / CLI / DSL
 npm run build:plugin   # 只改了插件
 npm run typecheck      # tsc -b 三个包
 npm run smoke          # 全链路冒烟，不需要打开 Figma
+npm run setup          # = bash scripts/install.sh，安装/更新 CLI 与 skill（可重复跑）
 ```
 
 ## 改完代码后必须做的事
