@@ -1,0 +1,439 @@
+/**
+ * WS Hub —— server 侧与 Figma 插件通信的全部机制。
+ *
+ * 一个 HTTP server 同时提供：
+ *   GET /health   插件先探活再建 WS。比直接连 WS 试错快得多，
+ *                 端口段扫描才不会在每个空端口上卡住 TCP 超时。
+ *   WS  /bridge   实际的双向通道。
+ *
+ * 端口从 3055 起逐个尝试，占用则降级到 3064。manifest 里整段都放行了，
+ * 所以换端口不需要重新 Import 插件。
+ */
+
+import { createServer, type IncomingMessage, type Server } from 'node:http';
+import { randomUUID } from 'node:crypto';
+import { WebSocketServer, WebSocket } from 'ws';
+import {
+  CHUNK_SIZE,
+  DEFAULT_REQUEST_TIMEOUT_MS,
+  ErrorCode,
+  HEALTH_PATH,
+  HOST,
+  Method,
+  PORTS,
+  PROTOCOL_VERSION,
+  WS_PATH,
+  type DocumentIdentity,
+  type NodeInfo,
+  type ParamsOf,
+  type PluginToServerMessage,
+  type ProtocolError,
+  type ResultOf,
+  type ServerToPluginMessage,
+} from '@figma-mcp/shared';
+import type { Auth } from './auth.js';
+import { log } from './logger.js';
+
+export const SERVER_VERSION = '0.1.0';
+
+const HEARTBEAT_INTERVAL_MS = 20_000;
+/** 超过这个时间没有任何消息（含 pong）就判定连接已死。 */
+const HEARTBEAT_TIMEOUT_MS = 60_000;
+
+export class BridgeError extends Error {
+  constructor(readonly protocolError: ProtocolError) {
+    super(protocolError.message);
+    this.name = 'BridgeError';
+  }
+}
+
+interface PendingRequest {
+  resolve(value: { result: unknown; data?: Buffer }): void;
+  reject(err: Error): void;
+  timer: NodeJS.Timeout;
+  /** 先于 res 到达的分片 */
+  chunks: (string | undefined)[];
+  chunksReceived: number;
+}
+
+export interface BridgeConnection {
+  /** 内部连接 id（同一文档重连会换） */
+  connId: string;
+  doc: DocumentIdentity;
+  connectedAt: number;
+  lastSeenAt: number;
+  pluginVersion: string;
+  /** 由插件的 selectionchange 事件更新，仅用于 list_documents 展示 */
+  selectionHint?: { count: number; names: string[] };
+  currentPageName?: string;
+}
+
+interface Client extends BridgeConnection {
+  socket: WebSocket;
+  ready: boolean;
+  pending: Map<string, PendingRequest>;
+}
+
+export interface RequestOptions {
+  timeoutMs?: number;
+}
+
+export class Hub {
+  private http?: Server;
+  private wss?: WebSocketServer;
+  private heartbeat?: NodeJS.Timeout;
+  /** docId → client。同一文档重连时替换旧连接。 */
+  private clients = new Map<string, Client>();
+  private _port = 0;
+
+  constructor(private readonly auth: Auth) {}
+
+  get port(): number {
+    return this._port;
+  }
+
+  async start(): Promise<number> {
+    const preferred = Number(process.env.FIGMA_MCP_PORT) || 0;
+    const candidates = preferred
+      ? [preferred, ...PORTS.filter((p) => p !== preferred)]
+      : [...PORTS];
+
+    for (const port of candidates) {
+      try {
+        this.http = await this.listen(port);
+        this._port = port;
+        break;
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code === 'EADDRINUSE' || code === 'EACCES') {
+          log.debug(`端口 ${port} 不可用（${code}），尝试下一个`);
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    if (!this.http) {
+      throw new Error(
+        `端口段 ${PORTS[0]}-${PORTS[PORTS.length - 1]} 全部被占用，无法启动 WS Hub`,
+      );
+    }
+
+    this.wss = new WebSocketServer({ server: this.http, path: WS_PATH });
+    this.wss.on('connection', (socket, req) => this.onConnection(socket, req));
+
+    this.heartbeat = setInterval(() => this.sweep(), HEARTBEAT_INTERVAL_MS);
+    this.heartbeat.unref();
+
+    log.info(`WS Hub 就绪  ws://${HOST}:${this._port}${WS_PATH}`);
+    return this._port;
+  }
+
+  async stop(): Promise<void> {
+    if (this.heartbeat) clearInterval(this.heartbeat);
+    for (const client of this.clients.values()) {
+      client.socket.close(1001, 'server shutting down');
+    }
+    this.clients.clear();
+    await new Promise<void>((resolve) => {
+      if (!this.http) return resolve();
+      this.http.close(() => resolve());
+      // 已建立的 keep-alive 连接会拖住 close，直接强制
+      this.http.closeAllConnections?.();
+    });
+  }
+
+  listDocuments(): BridgeConnection[] {
+    return [...this.clients.values()]
+      .filter((c) => c.ready)
+      .map(({ socket: _socket, pending: _pending, ready: _ready, ...rest }) => rest);
+  }
+
+  hasDocument(docId: string): boolean {
+    return this.clients.get(docId)?.ready === true;
+  }
+
+  /** 向指定文档的插件发一个请求，等待响应。 */
+  async request<M extends Method>(
+    docId: string,
+    method: M,
+    params: ParamsOf<M>,
+    opts: RequestOptions = {},
+  ): Promise<{ result: ResultOf<M>; data?: Buffer }> {
+    const client = this.clients.get(docId);
+    if (!client || !client.ready || client.socket.readyState !== WebSocket.OPEN) {
+      throw new BridgeError({
+        code: ErrorCode.DISCONNECTED,
+        message: `文档 ${docId} 的插件连接已断开，请确认 Figma 里插件仍在运行`,
+      });
+    }
+
+    const id = randomUUID();
+    const timeoutMs = opts.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        client.pending.delete(id);
+        reject(
+          new BridgeError({
+            code: ErrorCode.TIMEOUT,
+            message: `插件在 ${timeoutMs}ms 内未响应 ${method}。大文件上这可能是正常的，可以缩小 depth / limit 后重试`,
+          }),
+        );
+      }, timeoutMs);
+      timer.unref();
+
+      client.pending.set(id, {
+        resolve: resolve as PendingRequest['resolve'],
+        reject,
+        timer,
+        chunks: [],
+        chunksReceived: 0,
+      });
+
+      this.send(client, { type: 'req', id, method, params });
+    }) as Promise<{ result: ResultOf<M>; data?: Buffer }>;
+  }
+
+  // ------------------------------------------------------------ 内部
+
+  private listen(port: number): Promise<Server> {
+    return new Promise((resolve, reject) => {
+      const server = createServer((req, res) => this.onHttp(req, res));
+      const onError = (err: Error) => {
+        server.removeListener('listening', onListening);
+        reject(err);
+      };
+      const onListening = () => {
+        server.removeListener('error', onError);
+        resolve(server);
+      };
+      server.once('error', onError);
+      server.once('listening', onListening);
+      server.listen(port, HOST);
+    });
+  }
+
+  private onHttp(req: IncomingMessage, res: import('node:http').ServerResponse): void {
+    // 插件 iframe 的 origin 是 null，探活请求属于跨源，必须放行 CORS
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Headers', '*');
+
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204).end();
+      return;
+    }
+
+    const path = (req.url ?? '').split('?')[0];
+    if (path === HEALTH_PATH) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          ok: true,
+          service: 'figma-mcp',
+          version: SERVER_VERSION,
+          protocol: PROTOCOL_VERSION,
+          port: this._port,
+          pid: process.pid,
+          authRequired: this.auth.enabled,
+          documents: this.listDocuments().map((d) => ({
+            docId: d.doc.docId,
+            name: d.doc.name,
+          })),
+        }),
+      );
+      return;
+    }
+
+    res.writeHead(404, { 'Content-Type': 'text/plain' }).end('not found');
+  }
+
+  private onConnection(socket: WebSocket, req: IncomingMessage): void {
+    const connId = randomUUID();
+    log.debug(`WS 连接建立 ${connId} from ${req.socket.remoteAddress}`);
+
+    // 握手前的临时状态：只接受 hello
+    let client: Client | undefined;
+
+    const closeWith = (reason: string) => {
+      this.sendRaw(socket, {
+        type: 'hello-ack',
+        ok: false,
+        error: reason,
+        serverVersion: SERVER_VERSION,
+        protocol: PROTOCOL_VERSION,
+      });
+      setTimeout(() => socket.close(4001, reason), 50);
+    };
+
+    socket.on('message', (raw) => {
+      let msg: PluginToServerMessage;
+      try {
+        msg = JSON.parse(raw.toString()) as PluginToServerMessage;
+      } catch {
+        log.warn('收到无法解析的消息，忽略');
+        return;
+      }
+
+      if (!client) {
+        if (msg.type !== 'hello') {
+          closeWith('握手前只接受 hello 消息');
+          return;
+        }
+        if (msg.protocol !== PROTOCOL_VERSION) {
+          closeWith(
+            `协议版本不匹配：插件 ${msg.protocol} / server ${PROTOCOL_VERSION}。请重新构建并在 Figma 里重新 Import 插件`,
+          );
+          return;
+        }
+        if (!this.auth.verify(msg.token)) {
+          closeWith(`配对 token 不正确。请从 ${this.auth.tokenPath} 复制 token 粘贴到插件面板`);
+          return;
+        }
+
+        client = {
+          connId,
+          socket,
+          ready: true,
+          pending: new Map(),
+          doc: msg.doc,
+          pluginVersion: msg.pluginVersion,
+          connectedAt: Date.now(),
+          lastSeenAt: Date.now(),
+        };
+
+        const previous = this.clients.get(msg.doc.docId);
+        if (previous && previous.connId !== connId) {
+          log.debug(`文档 ${msg.doc.name} 已有连接，替换旧连接 ${previous.connId}`);
+          previous.socket.close(4000, 'replaced by newer connection');
+          this.failAllPending(previous, '连接已被同文档的新连接替换');
+        }
+        this.clients.set(msg.doc.docId, client);
+
+        this.sendRaw(socket, {
+          type: 'hello-ack',
+          ok: true,
+          serverVersion: SERVER_VERSION,
+          protocol: PROTOCOL_VERSION,
+        });
+        log.info(`插件已连接：${msg.doc.name} (${msg.doc.docId})`);
+        return;
+      }
+
+      client.lastSeenAt = Date.now();
+      this.handleMessage(client, msg);
+    });
+
+    socket.on('close', () => {
+      if (!client) return;
+      // 只有当注册表里还是这条连接时才移除，避免替换后误删新连接
+      if (this.clients.get(client.doc.docId)?.connId === client.connId) {
+        this.clients.delete(client.doc.docId);
+        log.info(`插件已断开：${client.doc.name}`);
+      }
+      this.failAllPending(client, '插件连接已断开');
+    });
+
+    socket.on('error', (err) => log.warn('WS 错误:', String(err)));
+  }
+
+  private handleMessage(client: Client, msg: PluginToServerMessage): void {
+    switch (msg.type) {
+      case 'chunk': {
+        const pending = client.pending.get(msg.id);
+        if (!pending) return; // 请求已超时，丢弃
+        if (pending.chunks[msg.index] === undefined) pending.chunksReceived++;
+        pending.chunks[msg.index] = msg.data;
+        return;
+      }
+      case 'res': {
+        const pending = client.pending.get(msg.id);
+        if (!pending) return;
+        client.pending.delete(msg.id);
+        clearTimeout(pending.timer);
+
+        if (!msg.ok) {
+          pending.reject(new BridgeError(msg.error));
+          return;
+        }
+
+        const chunkCount = (msg.result as { chunkCount?: number } | null)?.chunkCount;
+        if (typeof chunkCount === 'number' && chunkCount > 0) {
+          if (pending.chunksReceived !== chunkCount) {
+            pending.reject(
+              new BridgeError({
+                code: ErrorCode.INTERNAL,
+                message: `分片不完整：期望 ${chunkCount} 片，实际收到 ${pending.chunksReceived} 片`,
+              }),
+            );
+            return;
+          }
+          const base64 = pending.chunks.join('');
+          pending.resolve({ result: msg.result, data: Buffer.from(base64, 'base64') });
+          return;
+        }
+
+        pending.resolve({ result: msg.result });
+        return;
+      }
+      case 'event': {
+        this.handleEvent(client, msg.name, msg.payload);
+        return;
+      }
+      case 'pong':
+        return;
+      case 'hello':
+        // 重复 hello（插件重连但复用了 socket）—— 忽略，握手已完成
+        return;
+      default:
+        log.debug('未知消息类型，忽略');
+    }
+  }
+
+  private handleEvent(client: Client, name: string, payload: unknown): void {
+    if (name === 'selectionchange') {
+      const nodes = (payload as { selection?: NodeInfo[] } | null)?.selection ?? [];
+      client.selectionHint = {
+        count: nodes.length,
+        names: nodes.slice(0, 5).map((n) => n.name),
+      };
+      return;
+    }
+    if (name === 'currentpagechange') {
+      const page = (payload as { name?: string } | null)?.name;
+      if (page) client.currentPageName = page;
+    }
+  }
+
+  private failAllPending(client: Client, reason: string): void {
+    for (const [, pending] of client.pending) {
+      clearTimeout(pending.timer);
+      pending.reject(new BridgeError({ code: ErrorCode.DISCONNECTED, message: reason }));
+    }
+    client.pending.clear();
+  }
+
+  private sweep(): void {
+    const now = Date.now();
+    for (const client of this.clients.values()) {
+      if (now - client.lastSeenAt > HEARTBEAT_TIMEOUT_MS) {
+        log.warn(`心跳超时，断开 ${client.doc.name}`);
+        client.socket.terminate();
+        continue;
+      }
+      this.send(client, { type: 'ping', t: now });
+    }
+  }
+
+  private send(client: Client, msg: ServerToPluginMessage): void {
+    this.sendRaw(client.socket, msg);
+  }
+
+  private sendRaw(socket: WebSocket, msg: ServerToPluginMessage): void {
+    if (socket.readyState !== WebSocket.OPEN) return;
+    socket.send(JSON.stringify(msg));
+  }
+}
+
+/** 供插件侧复用的分片大小（这里导出只是为了让 server 侧断言一致）。 */
+export { CHUNK_SIZE };
