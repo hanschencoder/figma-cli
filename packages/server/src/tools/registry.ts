@@ -635,20 +635,17 @@ export function createTools(ctx: ToolContext): ToolDef[] {
           let body = serializeVariables(result.collections);
           if (result.truncated) body += note('变量数量超过上限，已截断');
 
-          const wantLibrary = args.library !== false && args.collectionId === undefined;
-          if (result.libraryError) {
-            body += note(`读不到外部 Library 的变量：${result.libraryError}`);
-          } else if (wantLibrary && result.libraryCount === undefined) {
-            // 老插件不返回这个字段。Figma 缓存插件代码，这是最常见的「改了没生效」
-            body += note(
-              '插件没有返回 Library 信息 —— Figma 里跑的多半还是旧版插件，' +
-                '关掉插件窗口重开（figma docs 可以看插件版本）',
-            );
-          } else if (wantLibrary && result.libraryCount === 0 && result.scanned !== undefined) {
-            body += note(
-              `本文件没有启用任何 Library 变量库。上面标了 source: referenced 的集合，` +
-                `是扫当前页 ${result.scanned} 个带变量绑定的节点反查出来的`,
-            );
+          // 只在**一个集合都没拿到**时解释原因。拿到了就别废话 ——
+          // teamLibrary 那条路空不空是实现细节，集合上的 source 字段已经说明来源
+          if (result.collections.length === 0) {
+            if (result.libraryError) {
+              body += note(`读不到外部 Library 的变量：${result.libraryError}`);
+            } else if (args.library !== false && result.libraryCount === undefined) {
+              body += note(
+                '插件没有返回 Library 信息 —— Figma 里跑的多半还是旧版插件，' +
+                  '关掉插件窗口重开（figma docs 可以看插件版本）',
+              );
+            }
           } else if (!args.values && result.collections.some((c) => c.libraryName !== undefined)) {
             body += note('Library 变量只列了清单，要各 mode 的具体值加 --values（较慢）');
           }
