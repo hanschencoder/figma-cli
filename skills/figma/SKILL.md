@@ -57,7 +57,7 @@ figma vars && figma styles     # 5. 需要 design token 时
 | `sizing: {w, h}` | 该节点作为子元素的尺寸行为：`fill` / `hug` / `fixed` |
 | `component: {of, props}` | 实例指向的主组件与属性覆盖 |
 | `bind` | 节点属性绑定到变量（width、itemSpacing…） |
-| `more` | 子节点未展开的原因，以及继续下钻用的 `rootId` |
+| `more: true` | 还有子节点没展开。拿同一行的 `id` 单独取树继续下钻 |
 | `$name` | 绑定的**变量**（variable） |
 | `@name` | 绑定的**样式**（style） |
 

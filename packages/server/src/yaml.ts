@@ -384,25 +384,11 @@ function nodeValue(node: NodeInfo, parent: NodeInfo | undefined, opts: Serialize
       node.children.map((child) => nodeValue(child, node, opts)),
     );
   }
-  if (node.truncated && node.childCount) {
-    const shown = node.children?.length ?? 0;
-    f.set('more', truncationHint(node, node.childCount - shown));
-  }
+  // 只标记「还有东西没展开」。具体差几个、为什么没展开，都不值得逐行重复 ——
+  // 下钻用的 rootId 就是同一行的 id，截断原因在文档末尾的注释里
+  if (node.truncated) f.set('more', true);
 
   return f.build();
-}
-
-/**
- * 截断提示要短。为什么不展开实例、怎么继续下钻，都写在 tool 描述里了，
- * 逐行重复一遍完整说明是纯粹的 token 浪费 —— 一棵树里可能有几十个实例。
- */
-function truncationHint(node: NodeInfo, hidden: number): string {
-  const drill = `rootId=${node.id}`;
-  if (node.truncatedBy === 'instance') return `实例内部 ${hidden} 节点未展开 (${drill})`;
-  if (node.truncatedBy === 'budget') {
-    return `还有 ${hidden} 个子节点，节点预算用尽 (提高 maxNodes 或 ${drill})`;
-  }
-  return `还有 ${hidden} 个子节点未展开 (${drill})`;
 }
 
 function textFields(text: TextInfo, node: NodeInfo, opts: SerializeOptions): Entry[] {

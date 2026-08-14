@@ -47,7 +47,7 @@ export const OUTPUT_LEGEND = `
   fill / color / stroke / effect / radius / font   外观
   component: {of, props}   实例指向的主组件与属性覆盖
   bind: {...}           节点属性绑定到变量（width、itemSpacing…）
-  more                  子节点未展开的原因和继续下钻的方式
+  more: true            还有子节点没展开，用这一行的 id 单独取树即可
   children              子节点，同样的结构
 值里的两个记号：
   $name   绑定的**变量**(variable)，生成代码时应映射为 design token
