@@ -3,8 +3,8 @@
  * 端到端冒烟：真 MCP server + 假 Figma 插件。
  *
  * 不需要打开 Figma —— 用一个 WebSocket 客户端伪装成插件，喂合成数据，
- * 验证 stdio MCP → Hub → 插件 → DSL 序列化 这条链路是通的，
- * 顺便肉眼检查 DSL 输出长什么样。
+ * 验证 stdio MCP → Hub → 插件 → YAML 序列化 这条链路是通的，
+ * 顺便肉眼检查输出长什么样。
  *
  *   node scripts/smoke.mjs
  */

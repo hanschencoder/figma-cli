@@ -5,7 +5,7 @@
 ## npm run smoke
 
 起一个真 daemon + 一个假 Figma 插件（WebSocket 客户端喂合成数据），跑完全部 tool 的
-MCP 和 CLI 两条路径。**不需要打开 Figma。** 改了 DSL 序列化或 tool 逻辑后先跑这个。
+MCP 和 CLI 两条路径。**不需要打开 Figma。** 改了 YAML 序列化或 tool 逻辑后先跑这个。
 
 改 `scripts/smoke.mjs` 时的两个约束：
 

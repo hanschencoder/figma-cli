@@ -5,7 +5,7 @@
  * 实现、同一套描述文本。CLI 的 --help 和 skill 文档都是从这里生成的，
  * 不会出现「文档说有这个参数、实现里没有」的漂移。
  *
- * 输出一律是**文本 DSL**而不是 JSON —— 同样的信息能省 5–10 倍 token。
+ * 输出一律是 **YAML**，字段无意义时一律省略 —— 上下文预算是第一约束。
  */
 
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -34,21 +34,24 @@ import {
   serializeStyles,
   serializeTextItems,
   serializeVariables,
-} from '../dsl.js';
+  yamlOf,
+  type Entry,
+} from '../yaml.js';
 
-export const DSL_LEGEND = `
-输出是一种紧凑 DSL，每行一个节点，缩进表示层级：
-  Frame "Card" #12:34  340x420  autoV gap=16 pad=20  fill=$surface/card  radius=8
-字段含义：
-  #12:34            节点 id，可直接传给其它命令
-  340x420           宽x高；@x,y 仅在非 Auto Layout 流内出现
-  autoV / autoH     Auto Layout 方向；gap 间距；pad 内边距(CSS 顺序)
-  w=fill / h=hug    该节点作为子元素的尺寸行为
-  justify= / align= 主轴 / 交叉轴对齐
-  $name             绑定的**变量**(variable)，生成代码时应映射为 design token
-  @name             绑定的**样式**(style)，同样是设计系统引用
-  fill= stroke= effect= radius= font=   外观属性
-  → "Set/Variant"   实例指向的主组件；props{...} 是实例属性覆盖
+export const OUTPUT_LEGEND = `
+输出是 YAML。节点的字段（无意义时一律省略）：
+  type / name / id      节点类型、图层名、节点 id，id 可直接传给其它命令
+  size: [w, h]          宽高；pos: [x, y] 仅在非 Auto Layout 流内出现
+  layout: {mode, gap, padding, justify, align}   自身的 Auto Layout
+  sizing: {w, h}        作为子元素的尺寸行为，fill / hug / fixed
+  fill / color / stroke / effect / radius / font   外观
+  component: {of, props}   实例指向的主组件与属性覆盖
+  bind: {...}           节点属性绑定到变量（width、itemSpacing…）
+  more                  子节点未展开的原因和继续下钻的方式
+  children              子节点，同样的结构
+值里的两个记号：
+  $name   绑定的**变量**(variable)，生成代码时应映射为 design token
+  @name   绑定的**样式**(style)，同样是设计系统引用
 关键：出现 $ 或 @ 时，生成的代码必须引用对应 token / 样式，不要硬编码字面值。
 `.trim();
 
@@ -133,11 +136,21 @@ async function guard(fn: () => Promise<ToolResult>): Promise<ToolResult> {
   } catch (err) {
     if (err instanceof BridgeError) {
       const { code, message, detail } = err.protocolError;
-      const extra = detail ? `\n候选：${JSON.stringify(detail)}` : '';
-      return failure(`[${code}] ${message}${extra}`);
+      return failure(
+        yamlOf([
+          ['error', code],
+          ['message', message],
+          ...(detail ? ([['candidates', JSON.stringify(detail)]] as [string, string][]) : []),
+        ]),
+      );
     }
     log.error('tool 执行失败:', err);
-    return failure(`执行失败: ${err instanceof Error ? err.message : String(err)}`);
+    return failure(
+      yamlOf([
+        ['error', 'INTERNAL'],
+        ['message', err instanceof Error ? err.message : String(err)],
+      ]),
+    );
   }
 }
 
@@ -159,20 +172,34 @@ export function createTools(ctx: ToolContext): ToolDef[] {
           const docs = router.candidates();
           if (docs.length === 0) {
             return ok(
-              '没有任何 Figma 插件连接。\n' +
-                '请在 Figma 桌面版打开设计文件，运行 Plugins → Development → Figma MCP Bridge，' +
-                '等插件面板状态变为「已连接」后重试。',
+              yamlOf([
+                ['documents', []],
+                [
+                  'hint',
+                  '没有任何 Figma 插件连接。请在 Figma 桌面版打开设计文件，运行 ' +
+                    'Plugins → Development → Figma MCP Bridge，等插件面板显示「已连接」后重试',
+                ],
+              ]),
             );
           }
           const active = router.active;
-          const lines = docs.map((d) => {
-            const mark = d.docId === active ? '* ' : '  ';
-            const bits = [`${mark}${d.name}  docId=${d.docId}`];
-            if (d.currentPage) bits.push(`page=${d.currentPage}`);
-            if (d.selection) bits.push(`选中 ${d.selection} 个节点`);
-            return bits.join('  ');
-          });
-          return ok(`已连接 ${docs.length} 个文档（* 为当前目标）：\n${lines.join('\n')}`);
+          return ok(
+            yamlOf([
+              [
+                'documents',
+                docs.map((d) => {
+                  const fields: [string, string | number | boolean][] = [
+                    ['name', d.name],
+                    ['docId', d.docId],
+                  ];
+                  if (d.currentPage) fields.push(['page', d.currentPage]);
+                  if (d.selection) fields.push(['selection', d.selection]);
+                  if (d.docId === active) fields.push(['active', true]);
+                  return fields;
+                }),
+              ],
+            ]),
+          );
         }),
     },
 
@@ -186,7 +213,12 @@ export function createTools(ctx: ToolContext): ToolDef[] {
       run: async ({ docId }) =>
         guard(async () => {
           const doc = router.select(docId as string);
-          return ok(`已切换到「${doc.name}」(${doc.docId})`);
+          return ok(
+            yamlOf([
+              ['selected', doc.name],
+              ['docId', doc.docId],
+            ]),
+          );
         }),
     },
 
@@ -224,7 +256,7 @@ export function createTools(ctx: ToolContext): ToolDef[] {
         '需要时再指定 rootId 继续下钻 —— 不要一次性拉很深，会把上下文撑爆。\n' +
         '组件实例的内部结构默认不展开（那是设计系统的实现细节，展开会吃掉' +
         '绝大部分节点预算）；实例名 + props 通常就够了，要文案用 text 命令。\n\n' +
-        DSL_LEGEND,
+        OUTPUT_LEGEND,
       schema: {
         ...docIdArg,
         rootId: z.string().optional().describe('起始节点 id，省略则用当前选中项'),
@@ -388,9 +420,13 @@ export function createTools(ctx: ToolContext): ToolDef[] {
           if (!path) return failure('图像落盘失败，无法交付');
 
           return {
-            text:
-              `#${id} 导出成功  ${result.width}x${result.height}  ` +
-              `scale=${result.scale}  ${(result.byteLength / 1024).toFixed(0)}KB\n${path}`,
+            text: yamlOf([
+              ['id', id],
+              ['path', path],
+              ['size', [result.width, result.height]],
+              ['scale', result.scale],
+              ['kb', Math.round(result.byteLength / 1024)],
+            ]),
             image: {
               path,
               mime: result.mime,
@@ -467,13 +503,17 @@ export function createTools(ctx: ToolContext): ToolDef[] {
           const planned = plan as NodeExportPlanResult;
           if (planned.targets.length === 0) {
             return failure(
-              `没有可导出的节点。missing=${(planned.missing ?? []).join(', ') || '无'}\n` +
-                '如果给的是 Frame 且想切它内部的图标，加 --recursive',
+              yamlOf([
+                ['error', 'NOT_FOUND'],
+                ['message', '没有可导出的节点。如果给的是 Frame 且想切它内部的图标，加 --recursive'],
+                ['missing', planned.missing ?? []],
+              ]),
             );
           }
 
           const dir = outputDir(args.out as string | undefined);
-          const lines: string[] = [];
+          const files: Entry[][] = [];
+          const failed: string[] = [];
           const used = new Set<string>();
           let total = 0;
           let bytes = 0;
@@ -481,7 +521,7 @@ export function createTools(ctx: ToolContext): ToolDef[] {
           for (const item of planned.targets) {
             for (const spec of specsFor(item, { format, scales, useSettings })) {
               if (total >= MAX_EXPORT_JOBS) {
-                lines.push(`… 达到单次 ${MAX_EXPORT_JOBS} 个文件的上限，其余未导出`);
+                failed.push(`达到单次 ${MAX_EXPORT_JOBS} 个文件的上限，其余未导出`);
                 break;
               }
 
@@ -499,33 +539,40 @@ export function createTools(ctx: ToolContext): ToolDef[] {
                 { timeoutMs: IMAGE_REQUEST_TIMEOUT_MS },
               );
               if (!data) {
-                lines.push(`✗ ${item.name} (${spec.format}) 插件没有回传数据`);
+                failed.push(`${item.name} (${spec.format})：插件没有回传数据`);
                 continue;
               }
 
               const exported = result as NodeExportResult;
               const path = writeAsset(dir, assetName(item, spec, exported, used), data);
               if (!path) {
-                lines.push(`✗ ${item.name} (${spec.format}) 落盘失败`);
+                failed.push(`${item.name} (${spec.format})：落盘失败`);
                 continue;
               }
 
               total++;
               bytes += data.byteLength;
-              lines.push(
-                `${path}  ${exported.format} ${exported.width}x${exported.height} ` +
-                  `${(data.byteLength / 1024).toFixed(1)}KB`,
-              );
+              files.push([
+                ['path', path],
+                ['format', exported.format],
+                ['size', [exported.width, exported.height]],
+                ['kb', Math.round((data.byteLength / 1024) * 10) / 10],
+              ]);
             }
           }
 
-          const head = `导出 ${total} 个文件到 ${dir}  合计 ${(bytes / 1024).toFixed(1)}KB`;
-          const tail: string[] = [];
-          if (planned.missing?.length) tail.push(`找不到的 id：${planned.missing.join(', ')}`);
-          if (planned.truncated) tail.push('清点结果被截断，节点太多，建议缩小范围');
-          if (total === 0) return failure([head, ...lines, ...tail].join('\n'));
+          const summary: Entry[] = [
+            ['out', dir],
+            ['count', total],
+            ['kb', Math.round((bytes / 1024) * 10) / 10],
+            ['files', files],
+          ];
+          if (failed.length > 0) summary.push(['failed', failed]);
+          if (planned.missing?.length) summary.push(['missing', planned.missing]);
+          if (planned.truncated) summary.push(['truncated', '清点结果被截断，建议缩小范围']);
 
-          return ok([head, ...lines, ...tail].join('\n'));
+          const text = yamlOf(summary);
+          return total === 0 ? failure(text) : ok(text);
         }),
     },
 

@@ -22,9 +22,9 @@ CLI 是短命进程，每次执行都等插件重新握手要好几秒。
 |---|---|---|
 | 采集 | `packages/plugin/src/collect/` | 字段白名单裁剪，产出中间 JSON |
 | 中间形状 | `packages/shared/src/model.ts` | 两端共用的数据契约 |
-| 序列化 | `packages/server/src/dsl.ts` | 中间 JSON → 紧凑文本 DSL |
+| 序列化 | `packages/server/src/yaml.ts` | 中间 JSON → YAML 文本 |
 
-**改输出格式优先改 `dsl.ts`** —— 插件每改一行都要重新 build + 在 Figma 里重载，
+**改输出格式优先改 `yaml.ts`** —— 插件每改一行都要重新 build + 在 Figma 里重载，
 daemon 重启一下就生效。只有当需要的字段插件根本没采集时，才动 `collect/`。
 
 ## tools/registry.ts 是单一事实来源
@@ -43,7 +43,7 @@ cli.ts 解析参数(zod) → POST /call → daemon.ts 路由 → registry 的 ru
   → hub.request() 发 WS req，等 res（带超时、分片重组）
   → 插件 ui.ts 转 postMessage → code.ts → handlers.ts dispatch
   → collect/node.ts 采集裁剪 → 原路返回
-  → dsl.ts serializeNodes() → 文本
+  → yaml.ts serializeNodes() → YAML 文本
 ```
 
 ## 文件职责

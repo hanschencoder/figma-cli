@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 npm run build          # shared → server → plugin，顺序敏感
-npm run build:server   # 只改了 daemon / CLI / DSL
+npm run build:server   # 只改了 daemon / CLI / 序列化
 npm run build:plugin   # 只改了插件
 npm run typecheck      # tsc -b 三个包
 npm run smoke          # 全链路冒烟，不需要打开 Figma
@@ -31,6 +31,10 @@ npm run setup          # = bash scripts/install.sh，安装/更新 CLI 与 skill
 **日志一律 stderr。** MCP 前端用 stdio，stdout 是 JSON-RPC 通道，写一个字节日志就让
 客户端解析失败。用 `logger.ts` 的 `log.*`，不要 `console.log`。
 
+**输出一律 YAML。** 序列化在 `server/src/yaml.ts`，自带一个最小 emitter（不引第三方）。
+引号规则保守：含 `:` `#` `@` 等保留字符就加引号 —— 节点 id `12:34` 不加引号会被 YAML 1.1
+解析器读成六十进制数字 754。省 token 靠「无意义字段不写」和「短结构走 flow」，不靠自造格式。
+
 **token 引用优先于原始值。** 输出 `$color/brand` 而不是 `#0A84FF`，`@Headline/mini`
 而不是字号字重。`$` = 变量，`@` = 样式。这是本项目相对截图识别的核心价值，改采集或
 序列化时不要退化成裸值。
@@ -45,7 +49,7 @@ token。组件实例内部默认不展开、文本图层名与内容重复时只
 
 **不静默猜测目标文档。** `router.ts`：单连接自动选，多连接未指定时报错并列出候选。
 
-**输出格式改 `server/src/dsl.ts`，不要改插件。** 插件改一行要重新 build 加在 Figma
+**输出格式改 `server/src/yaml.ts`，不要改插件。** 插件改一行要重新 build 加在 Figma
 里重载；daemon 重启就生效。只有字段根本没采集时才动 `plugin/src/collect/`。
 
 **tool 定义只写在 `server/src/tools/registry.ts`。** CLI 和 MCP 是两个前端，共用同一份

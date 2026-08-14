@@ -20,6 +20,7 @@ import { z } from 'zod';
 import { CLIENT_HOST, HEALTH_PATH, PORTS, STATE_DIR } from '@figma-mcp/shared';
 import { CALL_PATH, SHUTDOWN_PATH } from './daemon.js';
 import { absolutizePathArgs, createTools, type ToolDef } from './tools/registry.js';
+import { yamlOf, type Entry } from './yaml.js';
 
 const BIN = 'figma';
 const SPAWN_TIMEOUT_MS = 15_000;
@@ -386,7 +387,12 @@ async function post(
 async function cmdStatus(): Promise<number> {
   const found = await findDaemon();
   if (!found) {
-    console.log(`daemon 未运行。执行任意命令会自动拉起，或 \`${BIN} daemon\` 前台运行。`);
+    console.log(
+      yamlOf([
+        ['daemon', 'stopped'],
+        ['hint', `执行任意命令会自动拉起，或 ${BIN} daemon 前台运行`],
+      ]),
+    );
     return 0;
   }
   const res = await fetch(`http://${CLIENT_HOST}:${found.port}${HEALTH_PATH}`);
@@ -395,29 +401,37 @@ async function cmdStatus(): Promise<number> {
     pid: number;
     documents: { docId: string; name: string }[];
   };
-  console.log(
-    [
-      `daemon 运行中  端口 ${found.port}  pid ${health.pid}  v${health.version}`,
-      health.documents.length
-        ? `已连接文档:\n${health.documents.map((d) => `  ${d.name}  ${d.docId}`).join('\n')}`
-        : '没有 Figma 插件连接 —— 在 Figma 里运行 Figma MCP Bridge 插件',
-    ].join('\n'),
-  );
+  const out: Entry[] = [
+    ['daemon', 'running'],
+    ['port', found.port],
+    ['pid', health.pid],
+    ['version', health.version],
+    ['documents', health.documents.map((d) => [['name', d.name], ['docId', d.docId]] as Entry[])],
+  ];
+  if (health.documents.length === 0) {
+    out.push(['hint', '没有 Figma 插件连接 —— 在 Figma 里运行 Figma MCP Bridge 插件']);
+  }
+  console.log(yamlOf(out));
   return 0;
 }
 
 async function cmdStop(): Promise<number> {
   const found = await findDaemon();
   if (!found) {
-    console.log('daemon 未运行');
+    console.log(yamlOf([['daemon', 'stopped']]));
     return 0;
   }
   const { status, json } = await post(found, SHUTDOWN_PATH, {});
   if (status !== 200) {
-    console.error(`停止失败: ${String(json.error ?? status)}`);
+    console.error(
+      yamlOf([
+        ['error', 'STOP_FAILED'],
+        ['message', String(json.error ?? status)],
+      ]),
+    );
     return 1;
   }
-  console.log(`daemon 已停止（端口 ${found.port}）`);
+  console.log(yamlOf([['daemon', 'stopped'], ['port', found.port]]));
   return 0;
 }
 

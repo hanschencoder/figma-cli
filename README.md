@@ -196,16 +196,25 @@ MCP 前端仍然保留（`packages/server/dist/index.js`），但主推 CLI + sk
 
 ## 六、关键设计决策
 
-### 1. 输出用紧凑 DSL，不用 JSON
+### 1. 输出用 YAML
 
-同样的信息，原始 JSON 大约是下面这种格式的 5–10 倍 token：
-
-```
-Frame "ProductCard" #12:34  340x420 autoV gap=16 pad=20 fill=$surface/card radius=12 effect=$elevation/1
-  Rect "cover" #12:35  300x180 fill=<image:fill> radius=8
-  Frame "info" #12:36  300x60 autoV gap=8 w=fill
-    Text "title" #12:37  300x24 "AirPods Pro" color=$color/text-primary font=@text/heading-sm
-    Text "price" #12:38  300x20 "¥1,899" color=$color/brand font=Inter Regular 14/20px
+```yaml
+- type: Frame
+  name: ProductCard
+  id: "12:34"
+  size: [340, 420]
+  layout: {mode: vertical, gap: 16, padding: 20}
+  fill: $surface/card
+  radius: 12
+  effect: $elevation/1
+  children:
+    - type: Text
+      name: title
+      id: "12:37"
+      text: AirPods Pro
+      size: [300, 24]
+      color: $color/text-primary
+      font: {style: "@text/heading-sm"}
 ```
 
 记号约定：`$name` 是**变量**（variable），`@name` 是**样式**（style）。
@@ -214,10 +223,20 @@ Frame "ProductCard" #12:34  340x420 autoV gap=16 pad=20 fill=$surface/card radiu
 出现 `$` 或 `@` 时，生成的代码必须引用对应 token，不要硬编码字面值 —— 这条规则同时写进了
 `get_node_tree` 的 tool 描述里，模型读到输出时就知道该怎么处理。
 
+早期版本用的是一种自研的紧凑 DSL（一行一个节点），比 YAML 还省约一半 token。换掉的理由是
+**通用格式不需要额外解释**：YAML 谁都认得，模型不必先读一段图例才能读懂输出，下游也能直接
+`yq` / `ruby -ryaml` 处理。省下来的那点 token 抵不过一次误读的代价。
+
+省 token 的手段因此只剩两个，都用足了：**无意义的字段一律不写**（默认值、Auto Layout 流内的
+坐标、与内容重复的图层名…），**短结构走 flow 风格**（`{mode: vertical, gap: 16}` 而不是三行）。
+
+引号规则是保守的：只要含有 `:`、`#`、`@` 等 YAML 保留字符就加引号。节点 id 尤其重要 ——
+`12:34` 在 YAML 1.1 解析器里会被读成六十进制数字 754。
+
 ### 2. 插件侧裁剪，Server 侧格式化
 
 - **插件侧**只做字段白名单裁剪，回传精简的中间 JSON（省 WS 带宽，避开大对象序列化开销）
-- **daemon 侧**负责把中间 JSON 转成 DSL 文本
+- **daemon 侧**负责把中间 JSON 转成 YAML 文本
 
 理由很实际：插件每改一行都要重新 build 并在 Figma 里重载，迭代很慢；而输出格式恰恰是最需要反复调试的部分。放在 daemon 侧，`npm run build && figma stop` 就生效。
 
@@ -227,7 +246,7 @@ Frame "ProductCard" #12:34  340x420 autoV gap=16 pad=20 fill=$surface/card radiu
 
 - **分层读取** —— `figma tree <id> --depth 2`，深层只给 `id/name/type`，按需下钻
 - **字段白名单** —— 默认只返回布局相关属性，不返回完整 `fills`/`effects`/`vectorPaths`
-- **语义化压缩** —— 上面的 DSL
+- **语义化压缩** —— 上面的 YAML：默认值不写、短结构走 flow
 - **先定位再细看** —— `figma find` 找到目标再 `figma node`，避免全树遍历
 - **落盘再检索** —— 大树重定向到文件后 grep，只把命中行读进上下文（这是 CLI 相对 MCP 的核心优势）
 
@@ -292,7 +311,7 @@ node.boundVariables.fills[0].id
 figma-mcp/
 ├─ packages/
 │  ├─ shared/     协议类型定义（两端共用）
-│  ├─ server/     daemon + WS Hub + tools 注册表 + DSL；两个前端 cli.ts / index.ts(MCP)
+│  ├─ server/     daemon + WS Hub + tools 注册表 + YAML 序列化；两个前端 cli.ts / index.ts(MCP)
 │  └─ plugin/     manifest.json + code.ts（沙箱）+ ui.html/ui.ts
 ├─ skills/figma/  给 AI 的使用说明（软链到 ~/.claude/skills/）
 └─ scripts/       install.sh 一键安装/更新 · smoke.mjs 全链路冒烟

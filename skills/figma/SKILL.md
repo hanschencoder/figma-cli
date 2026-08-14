@@ -31,24 +31,41 @@ figma vars && figma styles     # 5. 需要 design token 时
 
 ## 输出格式
 
-每行一个节点，缩进表示层级：
+所有命令输出 YAML。无意义的字段一律省略，短结构走 flow 风格：
 
-```
-Frame "ProductCard" #12:34  340x420 autoV gap=16 pad=20 fill=$surface/card radius=12
-  Rect "cover" #12:35  300x180 fill=<image:fill> radius=8
-  Text #12:37  300x24 "AirPods Pro" color=$color/text-primary font=@Headline/mini
+```yaml
+- type: Frame
+  name: ProductCard
+  id: "12:34"
+  size: [340, 420]
+  layout: {mode: vertical, gap: 16, padding: 20}
+  fill: $surface/card
+  children:
+    - type: Text
+      id: "12:37"
+      text: AirPods Pro
+      size: [300, 24]
+      color: $color/text-primary
+      font: {style: "@text/heading-sm"}
 ```
 
-| 记号 | 含义 |
+| 字段 | 含义 |
 |---|---|
-| `#12:34` | 节点 id，直接传给其它命令 |
-| `340x420` | 宽x高。`@x,y` 只在非 Auto Layout 流内出现 |
-| `autoV` / `autoH` | Auto Layout 方向；`gap` 间距；`pad` 内边距（CSS 顺序） |
-| `w=fill` / `h=hug` | 该节点作为子元素的尺寸行为 |
-| `justify=` / `align=` | 主轴 / 交叉轴对齐 |
+| `id` | 节点 id，直接传给其它命令 |
+| `size: [w, h]` | 宽高。`pos: [x, y]` 只在非 Auto Layout 流内出现 |
+| `layout` | 自身的 Auto Layout：`mode` 方向、`gap` 间距、`padding` 内边距、`justify`/`align` 对齐 |
+| `sizing: {w, h}` | 该节点作为子元素的尺寸行为：`fill` / `hug` / `fixed` |
+| `component: {of, props}` | 实例指向的主组件与属性覆盖 |
+| `bind` | 节点属性绑定到变量（width、itemSpacing…） |
+| `more` | 子节点未展开的原因，以及继续下钻用的 `rootId` |
 | `$name` | 绑定的**变量**（variable） |
 | `@name` | 绑定的**样式**（style） |
-| `→ "Button"` + `props{...}` | 实例指向的主组件与属性覆盖 |
+
+输出量大时先重定向到文件再检索，别整棵树读进上下文：
+
+```bash
+figma tree --depth 8 > /tmp/t.yaml && grep -n "推荐" /tmp/t.yaml
+```
 
 ### 最重要的一条规则
 
@@ -90,7 +107,7 @@ figma text <id>                # 子树全部文本，含图层名
 `figma image <id>` 把 PNG 落到本地并打印路径。**用 Read 工具读那个路径**
 才能真正看到图。
 
-生成代码后再导一次对照还原度，比凭 DSL 想象靠谱。
+生成代码后再导一次对照还原度，比凭结构描述想象靠谱。
 
 ## 切图
 
