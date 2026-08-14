@@ -8,7 +8,7 @@
  *   3. 转发 selectionchange / currentpagechange
  */
 
-import { ErrorCode, type ProtocolError } from '@figma-mcp/shared';
+import { ErrorCode, type ProtocolError } from '@figma-cli/shared';
 import type { SandboxToUi, UiToSandbox } from './bridge-types.js';
 import { HandlerError, dispatch, documentIdentity } from './handlers.js';
 import { collectNode } from './collect/node.js';

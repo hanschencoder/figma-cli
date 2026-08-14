@@ -13,7 +13,7 @@ const watch = process.argv.includes('--watch');
  * 插件是单文件产物，走源码可以少一层构建顺序依赖。
  */
 const sharedAlias = {
-  '@figma-mcp/shared': resolve(root, '../shared/src/index.ts'),
+  '@figma-cli/shared': resolve(root, '../shared/src/index.ts'),
 };
 
 /** 沙箱侧：figma.* 在这里跑，没有 DOM、没有网络。 */
@@ -77,7 +77,7 @@ async function generateManifest() {
   template.networkAccess.allowedDomains = domains;
   template.networkAccess.devAllowedDomains = domains;
   template.networkAccess.reasoning =
-    `Connects to a local MCP server over WebSocket on localhost ` +
+    `Connects to a local daemon over WebSocket on localhost ` +
     `(port range ${PORT_RANGE_START}-${PORT_RANGE_END} for fallback when a port is occupied). ` +
     `No data leaves the machine.`;
 

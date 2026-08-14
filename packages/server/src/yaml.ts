@@ -27,7 +27,7 @@ import type {
   TokenRef,
   VariableCollectionInfo,
   VariableInfo,
-} from '@figma-mcp/shared';
+} from '@figma-cli/shared';
 import { lineHeightPx, parseFontStyle } from './font.js';
 import type { LintFinding } from './lint.js';
 import type {
@@ -873,7 +873,7 @@ export function serializeStats(stats: NodeStat[]): string {
  * path 用 › 串成可读路径，免去「拿到 id 还得再定位一次」。
  */
 /**
- * `figma plan` 的输出。
+ * `figma-cli plan` 的输出。
  *
  * 各段的顺序就是使用顺序：先知道要还原什么（target/structure），
  * 再知道哪些是复用的（components），再拿 token 和切图清单，最后是走查。

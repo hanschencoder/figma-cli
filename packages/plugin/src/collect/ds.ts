@@ -15,7 +15,7 @@ import type {
   VariableInfo,
   VariableResolvedType,
   VariableValue as TokenValue,
-} from '@figma-mcp/shared';
+} from '@figma-cli/shared';
 import {
   ResolveCache,
   formatVariableValue,

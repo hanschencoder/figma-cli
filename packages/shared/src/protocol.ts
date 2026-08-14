@@ -1,5 +1,5 @@
 /**
- * MCP Server ↔ Figma 插件 的 WebSocket 线协议。
+ * daemon ↔ Figma 插件 的 WebSocket 线协议。
  *
  * 方向约定：
  *   插件 → server: hello / res / chunk / event / pong

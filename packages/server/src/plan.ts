@@ -1,5 +1,5 @@
 /**
- * `figma plan` —— 还原前的一站式调研。
+ * `figma-cli plan` —— 还原前的一站式调研。
  *
  * 标准流程里 ctx / tree / vars / styles / text / components 这几步拿到的
  * 是**同一个子树的不同切面**，每次都重新遍历一遍、每次都要一轮往返。
@@ -13,7 +13,7 @@ import type {
   NodeInfo,
   StyleInfo,
   VariableCollectionInfo,
-} from '@figma-mcp/shared';
+} from '@figma-cli/shared';
 import { foldIcon, isSystemChrome, type FoldOptions } from './fold.js';
 import { lineHeightPx, parseFontStyle } from './font.js';
 import type { LintFinding } from './lint.js';

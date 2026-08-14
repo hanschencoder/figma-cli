@@ -5,7 +5,7 @@
  * UI 有网络但碰不到 figma.*。所有东西都得在这两者之间倒一次手。
  */
 
-import type { DocumentIdentity, Method, ProtocolError } from '@figma-mcp/shared';
+import type { DocumentIdentity, Method, ProtocolError } from '@figma-cli/shared';
 
 export type SandboxToUi =
   /** 握手所需的文档身份，插件启动时和文档变化时发送 */

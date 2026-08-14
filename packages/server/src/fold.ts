@@ -13,7 +13,7 @@
  * 必须留一条看原样的路。
  */
 
-import type { NodeInfo, PaintInfo } from '@figma-mcp/shared';
+import type { NodeInfo, PaintInfo } from '@figma-cli/shared';
 
 export interface FoldOptions {
   /** 原子图标折叠成 type: Icon 一行 */

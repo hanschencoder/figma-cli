@@ -12,7 +12,7 @@ import type {
   StyleRef,
   TokenRef,
   VariableResolvedType,
-} from '@figma-mcp/shared';
+} from '@figma-cli/shared';
 
 // ---------------------------------------------------------------- 颜色
 

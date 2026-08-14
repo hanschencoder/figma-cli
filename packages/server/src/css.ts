@@ -9,7 +9,7 @@
  * 明确不做：不猜组件名、不生成 HTML/框架代码、不做响应式断点推断。
  */
 
-import type { NodeInfo, PaintInfo, TokenRef } from '@figma-mcp/shared';
+import type { NodeInfo, PaintInfo, TokenRef } from '@figma-cli/shared';
 import { lineHeightPx, parseFontStyle } from './font.js';
 
 export interface CssOptions {
@@ -177,7 +177,7 @@ function textDecls(node: NodeInfo, opts: CssOptions): Decl[] {
     out.push({
       property: 'font',
       value: varOf(node.styles.text.name, opts, '@'),
-      comment: '文字样式；具体字号/行高/字重见 figma styles',
+      comment: '文字样式；具体字号/行高/字重见 figma-cli styles',
     });
     return out;
   }
@@ -227,7 +227,7 @@ function paintValue(paints: PaintInfo[] | undefined, opts: CssOptions): string |
     const stops = (paint.stops ?? []).map((s) => `${s.color} ${Math.round(s.pos * 100)}%`).join(', ');
     return `linear-gradient(${stops})`;
   }
-  if (paint.kind === 'image') return 'url(/* 位图，用 figma export 切出来 */)';
+  if (paint.kind === 'image') return 'url(/* 位图，用 figma-cli export 切出来 */)';
   return undefined;
 }
 

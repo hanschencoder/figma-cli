@@ -47,7 +47,7 @@ export const CHUNK_SIZE = 256 * 1024;
 export const MAX_IMAGE_DIMENSION = 1500;
 
 /** 运行时状态目录（相对 home 目录）：daemon.json、daemon.log、导出的图片。 */
-export const STATE_DIR = '.figma-mcp';
+export const STATE_DIR = '.figma-cli';
 
 /**
  * 系统 chrome 组件名单。
@@ -57,7 +57,7 @@ export const STATE_DIR = '.figma-mcp';
  * 而真实工程里这部分通常由系统或独立组件提供，根本不该由页面还原。
  *
  * 匹配是「名字里包含其中一项」，大小写不敏感。用户可以在
- * `~/.figma-mcp/config.json` 的 `systemComponents` 里追加。
+ * `~/.figma-cli/config.json` 的 `systemComponents` 里追加。
  */
 export const SYSTEM_CHROME_NAMES: readonly string[] = [
   'statusbar',

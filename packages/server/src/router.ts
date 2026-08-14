@@ -6,7 +6,7 @@
  * 让模型（或用户）明确指定。猜错文档产生的错误极难排查。
  */
 
-import { ErrorCode, type DocumentIdentity } from '@figma-mcp/shared';
+import { ErrorCode, type DocumentIdentity } from '@figma-cli/shared';
 import { BridgeError, type Hub } from './hub.js';
 
 export class DocumentRouter {
@@ -47,7 +47,7 @@ export class DocumentRouter {
         code: ErrorCode.NO_DOCUMENT,
         message:
           '当前没有任何 Figma 插件连接。请在 Figma 桌面版打开设计文件，' +
-          '运行 Plugins → Development → Figma MCP Bridge，等状态变为已连接后重试。',
+          '运行 Plugins → Development → Figma CLI Bridge，等状态变为已连接后重试。',
       });
     }
 

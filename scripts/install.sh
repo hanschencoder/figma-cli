@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# figma-mcp 一键安装 / 更新。
+# figma-cli 一键安装 / 更新。
 #
 #   bash scripts/install.sh              安装或更新（重复执行是安全的）
 #   bash scripts/install.sh --uninstall  卸载 CLI 与 skill
 #
-# 做四件事：装依赖并构建 → 把 figma 命令链到 PATH → 把 skill 链到 ~/.claude/skills
+# 做四件事：装依赖并构建 → 把 figma-cli 命令链到 PATH → 把 skill 链到 ~/.claude/skills
 # → 停掉旧 daemon。插件 manifest 仍需在 Figma 里手动 Import（Figma 没有别的通道），
 # 脚本最后会把路径打出来。
 #
@@ -14,12 +14,12 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-STATE_DIR="$HOME/.figma-mcp"
+STATE_DIR="$HOME/.figma-cli"
 RECORD="$STATE_DIR/install.json"
 SKILL_DIR="${FIGMA_SKILL_DIR:-$HOME/.claude/skills}"
-SKILL_SRC="$REPO_ROOT/skills/figma"
-SKILL_TARGET="$SKILL_DIR/figma"
-WORKSPACE="@figma-mcp/server"
+SKILL_SRC="$REPO_ROOT/skills/figma-cli"
+SKILL_TARGET="$SKILL_DIR/figma-cli"
+WORKSPACE="@figma-cli/server"
 MIN_NODE_MAJOR=20
 
 FORCE=0
@@ -44,8 +44,8 @@ usage() {
 用法: bash scripts/install.sh [选项]
 
   (无选项)      安装或更新 CLI 与 skill，可重复执行
-  --uninstall   卸载：解除 figma 命令、移除 skill 软链、停掉 daemon
-  --force       接管不是本仓库装的 figma 命令 / skill（会先备份）
+  --uninstall   卸载：解除 figma-cli 命令、移除 skill 软链、停掉 daemon
+  --force       接管不是本仓库装的 figma-cli 命令 / skill（会先备份）
   -h, --help    显示本说明
 
 环境变量:
@@ -84,8 +84,8 @@ backup_path() { printf '%s.bak.%s' "$1" "$(date +%Y%m%d%H%M%S)"; }
 
 # 停掉常驻 daemon。旧进程跑的是旧代码，不停就等于没更新。
 stop_daemon() {
-  if command -v figma >/dev/null 2>&1; then
-    figma stop >/dev/null 2>&1 || true
+  if command -v figma-cli >/dev/null 2>&1; then
+    figma-cli stop >/dev/null 2>&1 || true
   fi
   # CLI 停不掉（比如旧版本协议对不上）就按 pid 兜底
   if [ -f "$STATE_DIR/daemon.json" ]; then
@@ -109,7 +109,7 @@ if [ "$MODE" = uninstall ]; then
   stop_daemon
   info "已停止（如果本来就没在跑，忽略）"
 
-  step "解除 figma 命令"
+  step "解除 figma-cli 命令"
   if npm rm -g "$WORKSPACE" >/dev/null 2>&1; then
     info "已解除 $WORKSPACE"
   else
@@ -183,7 +183,7 @@ info "已停止（如果本来就没在跑，忽略）"
 # 收进临时文件，只在失败时整段打出来。
 run_quiet() {
   local title="$1"; shift
-  local log; log="$(mktemp -t figma-mcp-install)"
+  local log; log="$(mktemp -t figma-cli-install)"
   if ! (cd "$REPO_ROOT" && "$@") >"$log" 2>&1; then
     printf '\n'; cat "$log" >&2; rm -f "$log"
     die "$title 失败（完整输出见上）"
@@ -201,10 +201,10 @@ info "产物就绪"
 
 # ---------------------------------------------------------------- CLI
 
-step "安装 figma 命令"
+step "安装 figma-cli 命令"
 
 BIN_DIR="$(npm_bin_dir)"
-BIN_PATH="$BIN_DIR/figma"
+BIN_PATH="$BIN_DIR/figma-cli"
 OURS="$REPO_ROOT/packages/server/dist/cli.js"
 
 if [ -e "$BIN_PATH" ] || [ -L "$BIN_PATH" ]; then
@@ -214,7 +214,7 @@ if [ -e "$BIN_PATH" ] || [ -L "$BIN_PATH" ]; then
   elif [ "$FORCE" = 1 ]; then
     bak="$(backup_path "$BIN_PATH")"
     mv "$BIN_PATH" "$bak"
-    warn "原有的 figma 命令指向 ${current:-未知}，已备份到 $bak"
+    warn "原有的 figma-cli 命令指向 ${current:-未知}，已备份到 $bak"
   else
     die "$BIN_PATH 已存在且指向 ${current:-未知}，不是本仓库装的。
     确认要接管就加 --force（会先备份），否则请先自行处理。"
@@ -223,8 +223,8 @@ fi
 
 (cd "$REPO_ROOT" && npm link -w "$WORKSPACE") >/dev/null 2>&1 || die "npm link 失败"
 
-command -v figma >/dev/null 2>&1 || warn "figma 不在当前 PATH 里 —— 确认 $BIN_DIR 在 PATH 中"
-info "figma -> $OURS"
+command -v figma-cli >/dev/null 2>&1 || warn "figma-cli 不在当前 PATH 里 —— 确认 $BIN_DIR 在 PATH 中"
+info "figma-cli -> $OURS"
 
 # ---------------------------------------------------------------- skill
 
@@ -281,15 +281,15 @@ else
       Plugins → Development → Import plugin from manifest...
       选择 $MANIFEST
 
-    然后 Plugins → Development → Figma MCP Bridge 运行它。
+    然后 Plugins → Development → Figma CLI Bridge 运行它。
 EOF
 fi
 
 cat <<EOF
 
     验证：
-      figma --help
-      figma status
-      figma ctx          # 插件跑起来之后，看看选中了什么
+      figma-cli --help
+      figma-cli status
+      figma-cli ctx          # 插件跑起来之后，看看选中了什么
 
 EOF

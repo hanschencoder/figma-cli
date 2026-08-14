@@ -1,6 +1,6 @@
 {
-  "name": "Figma MCP Bridge",
-  "id": "figma-mcp-bridge-local",
+  "name": "Figma CLI Bridge",
+  "id": "figma-cli-bridge-local",
   "api": "1.0.0",
   "main": "build/code.js",
   "ui": "build/ui.html",
@@ -39,7 +39,7 @@
       "ws://localhost:3063",
       "ws://localhost:3064"
     ],
-    "reasoning": "Connects to a local MCP server over WebSocket on localhost (port range 3055-3064 for fallback when a port is occupied). No data leaves the machine.",
+    "reasoning": "Connects to a local daemon over WebSocket on localhost (port range 3055-3064 for fallback when a port is occupied). No data leaves the machine.",
     "devAllowedDomains": [
       "http://localhost:3055",
       "http://localhost:3056",

@@ -35,7 +35,7 @@ import {
   type ProtocolError,
   type ResultOf,
   type ServerToPluginMessage,
-} from '@figma-mcp/shared';
+} from '@figma-cli/shared';
 import { log } from './logger.js';
 
 export const SERVER_VERSION = '0.1.0';
@@ -109,7 +109,7 @@ export class Hub {
   }
 
   async start(): Promise<number> {
-    const preferred = Number(process.env.FIGMA_MCP_PORT) || 0;
+    const preferred = Number(process.env.FIGMA_CLI_PORT) || 0;
     const candidates = preferred
       ? [preferred, ...PORTS.filter((p) => p !== preferred)]
       : [...PORTS];
@@ -287,7 +287,7 @@ export class Hub {
       res.end(
         JSON.stringify({
           ok: true,
-          service: 'figma-mcp',
+          service: 'figma-cli',
           version: SERVER_VERSION,
           protocol: PROTOCOL_VERSION,
           port: this._port,

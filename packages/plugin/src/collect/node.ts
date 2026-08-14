@@ -19,7 +19,7 @@ import type {
   NodeStat,
   TextInfo,
   TextSegment,
-} from '@figma-mcp/shared';
+} from '@figma-cli/shared';
 import {
   ResolveCache,
   collectNodeTokens,

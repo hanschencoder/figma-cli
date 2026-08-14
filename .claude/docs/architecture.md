@@ -1,10 +1,10 @@
 # 架构
 
 ```
-AI ──► figma CLI ──HTTP POST /call──► daemon ──WS /bridge──► 插件 UI(iframe)
-                                        ▲                        │ postMessage
-                                   MCP stdio 前端                 ▼
-                                     (可选)                  插件沙箱 ──► figma.*
+AI ──► figma-cli ──HTTP POST /call──► daemon ──WS /bridge──► 插件 UI(iframe)
+                                                               │ postMessage
+                                                               ▼
+                                                          插件沙箱 ──► figma.*
 ```
 
 ## 三段式是硬约束，不是设计选择
@@ -31,18 +31,18 @@ CLI 是短命进程，每次执行都等插件重新握手要好几秒。
 
 折叠、走查、CSS、plan 全都跑在 server 侧，吃的是同一份中间 JSON。**插件只管把
 一棵完整的树捞回来**，怎么裁、怎么聚合、怎么呈现都是 server 的事 —— 这样加一个
-派生视角（比如未来的 `figma diff`）不需要碰插件。
+派生视角（比如未来的 `figma-cli diff`）不需要碰插件。
 
 ## tools/registry.ts 是单一事实来源
 
 `packages/server/src/tools/registry.ts` 定义每个 tool 的 zod schema、描述和实现，
-**传输无关**。CLI（`cli.ts`）和 MCP（`index.ts`）只是两个前端：
+CLI 前端（`cli.ts`）只是从中反射出子命令：
 
 - CLI 的 `--help`、参数解析、类型校验全部从 zod schema 反射生成
-- 加一个新命令只需往 registry 数组里加一项，两个前端自动都有
-- CLI 用短名（`tree`），MCP 用规范名（`get_node_tree`），CLI 两个都接受
+- 加一个新命令只需往 registry 数组里加一项，CLI 自动就有
+- CLI 用短名（`tree`），也接受规范名（`get_node_tree`）
 
-## 一次 `figma tree` 的完整路径
+## 一次 `figma-cli tree` 的完整路径
 
 ```
 cli.ts 解析参数(zod) → POST /call → daemon.ts 路由 → registry 的 run()
@@ -62,7 +62,7 @@ cli.ts 解析参数(zod) → POST /call → daemon.ts 路由 → registry 的 ru
 | `server/src/fold.ts` | 三种结构折叠的判定 + 结构哈希 + 同构差异。**有损，每条都留了关闭开关** |
 | `server/src/lint.ts` | 设计走查规则。只报告不修改 |
 | `server/src/css.ts` | Auto Layout → flex 的机械翻译。不生成 HTML、不猜组件名 |
-| `server/src/plan.ts` | `figma plan` 的聚合：组件复用、切图清单、文案、间距刻度 |
+| `server/src/plan.ts` | `figma-cli plan` 的聚合：组件复用、切图清单、文案、间距刻度 |
 | `server/src/svg.ts` | 导出 SVG 的 currentColor 替换与外壳剥离 |
 | `server/src/font.ts` | style 名 → font-weight 数值、行高百分比 → 像素 |
 | `server/src/daemon.ts` | 常驻进程装配：Hub + tools + `/call` `/shutdown` 路由 |

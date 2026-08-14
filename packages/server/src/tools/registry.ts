@@ -1,7 +1,7 @@
 /**
  * Tool 注册表 —— 传输无关。
  *
- * MCP 和 CLI 只是两个前端，共用这里的定义：同一套参数 schema、同一套
+ * CLI 前端从这里的定义反射出子命令：同一套参数 schema、同一套
  * 实现、同一套描述文本。CLI 的 --help 和 skill 文档都是从这里生成的，
  * 不会出现「文档说有这个参数、实现里没有」的漂移。
  *
@@ -23,7 +23,7 @@ import {
   type ExportTarget,
   type NodeExportPlanResult,
   type NodeExportResult,
-} from '@figma-mcp/shared';
+} from '@figma-cli/shared';
 import { BridgeError, type Hub } from '../hub.js';
 import { log } from '../logger.js';
 import type { DocumentRouter } from '../router.js';
@@ -94,12 +94,12 @@ export interface ToolImage {
 export interface ToolResult {
   text: string;
   isError?: boolean;
-  /** 图像落盘后的信息。MCP 前端会额外内联 base64，CLI 前端只给路径。 */
+  /** 图像落盘后的信息。CLI 前端打印路径，让 AI 自己去 Read。 */
   image?: ToolImage;
 }
 
 export interface ToolDef {
-  /** 规范名，MCP 用这个 */
+  /** 规范名（长名），CLI 也接受它作为子命令 */
   name: string;
   /** CLI 子命令（短），CLI 也接受规范名 */
   cli: string;
@@ -114,7 +114,7 @@ export interface ToolDef {
    * 值是文件路径的参数名。
    *
    * tool 跑在 daemon 里，daemon 的 cwd 是它被拉起来时那个目录，跟用户此刻在哪
-   * 毫无关系。所以相对路径必须由**前端**（CLI / MCP）在自己的进程里解析成绝对
+   * 毫无关系。所以相对路径必须由 **CLI 前端**在自己的进程里解析成绝对
    * 路径再发出去，见 absolutizePathArgs。
    */
   pathArgs?: string[];
@@ -275,7 +275,7 @@ export function createTools(ctx: ToolContext): ToolDef[] {
                 [
                   'hint',
                   '没有任何 Figma 插件连接。请在 Figma 桌面版打开设计文件，运行 ' +
-                    'Plugins → Development → Figma MCP Bridge，等插件面板显示「已连接」后重试',
+                    'Plugins → Development → Figma CLI Bridge，等插件面板显示「已连接」后重试',
                 ],
               ]),
             );
@@ -1009,7 +1009,7 @@ export function createTools(ctx: ToolContext): ToolDef[] {
             } else if (args.library !== false && result.libraryCount === undefined) {
               body += note(
                 '插件没有返回 Library 信息 —— Figma 里跑的多半还是旧版插件，' +
-                  '关掉插件窗口重开（figma docs 可以看插件版本）',
+                  '关掉插件窗口重开（figma-cli docs 可以看插件版本）',
               );
             }
           } else if (!args.values && result.collections.some((c) => c.libraryName !== undefined)) {
@@ -1091,7 +1091,7 @@ export function createTools(ctx: ToolContext): ToolDef[] {
 }
 
 /**
- * 导出的图片落到 ~/.figma-mcp/exports/。
+ * 导出的图片落到 ~/.figma-cli/exports/。
  *
  * 对 CLI 来说这不是"调试副本"而是唯一的交付方式 —— 命令行没法把图片
  * 直接塞给模型，只能给路径让它自己去读。

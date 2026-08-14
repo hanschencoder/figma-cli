@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-自建的 Figma → AI 通道，绕开 REST API 速率限制。插件读文档树 → daemon → `figma` CLI。**v1 只读。**
+自建的 Figma → AI 通道，绕开 REST API 速率限制。插件读文档树 → daemon → `figma-cli`。**v1 只读。**
 
 ## 命令
 
@@ -19,7 +19,7 @@ npm run setup          # = bash scripts/install.sh，安装/更新 CLI 与 skill
 
 | 改了什么 | 必须做 |
 |---|---|
-| `packages/server/**` | `npm run build:server && figma stop` —— **不 stop 跑的还是旧 daemon** |
+| `packages/server/**` | `npm run build:server && figma-cli stop` —— **不 stop 跑的还是旧 daemon** |
 | `packages/plugin/src/**` | `npm run build:plugin`，在 Figma 里关掉插件窗口重开 |
 | `manifest.template.json` 或端口段常量 | 重新 build，在 Figma 里**重新 Import manifest**（应用级缓存，重开窗口不够） |
 | `packages/shared/**` | `npm run build`（两端都依赖） |
@@ -28,12 +28,12 @@ npm run setup          # = bash scripts/install.sh，安装/更新 CLI 与 skill
 
 ## 约定
 
-**日志一律 stderr。** MCP 前端用 stdio，stdout 是 JSON-RPC 通道，写一个字节日志就让
-客户端解析失败。用 `logger.ts` 的 `log.*`，不要 `console.log`。
+**日志一律 stderr。** CLI 的 stdout 只输出 YAML，掺一个字节日志就让 `yq` 之类的下游
+管道解析失败。用 `logger.ts` 的 `log.*`，不要 `console.log`。
 
 **stdout 只有 YAML，不许掺一行别的。** 进度提示（如「daemon 已启动」）走 stderr，而且写成
 `# 注释` 形式；「已截断」「找不到这些 id」这类附注用 `note()` 追加成 YAML 注释行 —— 这样
-`figma tree 2>&1 | yq` 也不会炸。help / usage 报错是例外，那是给人看的。
+`figma-cli tree 2>&1 | yq` 也不会炸。help / usage 报错是例外，那是给人看的。
 
 **输出一律 YAML。** 序列化在 `server/src/yaml.ts`，自带一个最小 emitter（不引第三方）。
 引号规则保守：含 `:` `#` `@` 等保留字符就加引号 —— 节点 id `12:34` 不加引号会被 YAML 1.1
@@ -49,7 +49,7 @@ token。组件实例内部默认不展开、文本图层名与内容重复时只
 
 **路径参数必须由前端解析成绝对路径。** tool 跑在 daemon 里，daemon 的 cwd 是它被
 拉起来时那个目录，跟用户此刻在哪毫无关系。要接收路径的 tool 在 `ToolDef.pathArgs`
-里声明参数名，CLI 和 MCP 各自调 `absolutizePathArgs` 解析后再发出去。
+里声明参数名，CLI 前端调 `absolutizePathArgs` 解析后再发出去。
 
 **不静默猜测目标文档。** `router.ts`：单连接自动选，多连接未指定时报错并列出候选。
 
@@ -66,8 +66,8 @@ token。组件实例内部默认不展开、文本图层名与内容重复时只
 （不用拿 size 反推）、font-weight 数值（不用查 style 名表）、currentColor 替换 —— 这些
 都是「算错一位也看不出来、错误直接进交付物」的地方，宁可每个节点多一行也要给全。
 
-**tool 定义只写在 `server/src/tools/registry.ts`。** CLI 和 MCP 是两个前端，共用同一份
-zod schema / 实现 / 描述；CLI 的 `--help` 和参数校验从 schema 反射生成。
+**tool 定义只写在 `server/src/tools/registry.ts`。** 一份 zod schema / 实现 / 描述；
+CLI 的 `--help` 和参数校验从 schema 反射生成。
 
 ## 参考文档（按需 Read）
 

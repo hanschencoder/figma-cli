@@ -8,7 +8,7 @@ import { log } from './logger.js';
 
 const daemon = await startDaemon();
 
-log.info(`figma daemon 已就绪（端口 ${daemon.port}，pid ${process.pid}）`);
+log.info(`figma-cli daemon 已就绪（端口 ${daemon.port}，pid ${process.pid}）`);
 
 const shutdown = (signal: string) => {
   log.info(`收到 ${signal}，退出中`);

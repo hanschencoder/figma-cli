@@ -10,7 +10,7 @@
  * 原则：**只报告，不修改**。每条给出可执行的 fix 建议，做不做是设计侧的决定。
  */
 
-import type { NodeInfo, PaintInfo, VariableCollectionInfo } from '@figma-mcp/shared';
+import type { NodeInfo, PaintInfo, VariableCollectionInfo } from '@figma-cli/shared';
 
 export type LintLevel = 'error' | 'warn' | 'info';
 

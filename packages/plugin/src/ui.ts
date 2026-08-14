@@ -2,8 +2,8 @@
  * 插件 UI（iframe）—— 网络这一侧。
  *
  * 职责：
- *   1. 扫描端口段找到本机 MCP server（先 HTTP 探活再建 WS，避免在空端口上
- *      等 TCP 超时），连上所有活着的 server
+ *   1. 扫描端口段找到本机 daemon（先 HTTP 探活再建 WS，避免在空端口上
+ *      等 TCP 超时），连上所有活着的 daemon
  *   2. 断线后持续重连 —— 插件常常先于 server 打开，不能要求用户手动重启插件
  *   3. 把 server 的 req 转给沙箱，把沙箱的 res 转回**发起请求的那个** server
  *   4. 把沙箱编码好的 base64 载荷分片发出
@@ -22,7 +22,7 @@ import {
   type PluginToServerMessage,
   type ReqMessage,
   type ServerToPluginMessage,
-} from '@figma-mcp/shared';
+} from '@figma-cli/shared';
 import type { SandboxToUi, UiToSandbox } from './bridge-types.js';
 
 const PLUGIN_VERSION = '0.2.0';
@@ -182,7 +182,7 @@ async function probe(port: number): Promise<ProbeResult> {
     if (!res.ok) return { ok: false, reason: `HTTP ${res.status}` };
 
     const body = (await res.json()) as { service?: string; protocol?: number };
-    if (body.service !== 'figma-mcp') return { ok: false, reason: '端口被其它服务占用' };
+    if (body.service !== 'figma-cli') return { ok: false, reason: '端口被其它服务占用' };
     if (body.protocol !== PROTOCOL_VERSION) {
       return { ok: false, reason: `协议版本 ${body.protocol} ≠ ${PROTOCOL_VERSION}，需重新构建` };
     }
@@ -230,8 +230,8 @@ async function scan(): Promise<void> {
       const report =
         notable.length > 0
           ? `扫描 ${PORTS[0]}-${PORTS[PORTS.length - 1]}：${notable.join('; ')}`
-          : `扫描 ${PORTS[0]}-${PORTS[PORTS.length - 1]} 无响应 —— MCP server 未启动？` +
-            `（它由 MCP 客户端拉起；单独调试可跑 npm run server）`;
+          : `扫描 ${PORTS[0]}-${PORTS[PORTS.length - 1]} 无响应 —— daemon 未启动？` +
+            `（它由 figma-cli 命令按需拉起；单独调试可跑 figma-cli daemon）`;
       if (report !== lastScanReport) {
         lastScanReport = report;
         logLine(report);

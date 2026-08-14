@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * 端到端冒烟：真 MCP server + 假 Figma 插件。
+ * 端到端冒烟：真 daemon + 假 Figma 插件。
  *
  * 不需要打开 Figma —— 用一个 WebSocket 客户端伪装成插件，喂合成数据，
- * 验证 stdio MCP → Hub → 插件 → YAML 序列化 这条链路是通的，
+ * 验证 CLI/HTTP → Hub → 插件 → YAML 序列化 这条链路是通的，
  * 顺便肉眼检查输出长什么样。
  *
  *   node scripts/smoke.mjs
@@ -232,51 +232,56 @@ const RESPONSES = {
   }),
 };
 
-// ---------------------------------------------------------------- MCP 客户端
+// ---------------------------------------------------------------- daemon HTTP 客户端
 
-class StdioClient {
-  #child;
-  #buffer = '';
-  #pending = new Map();
-  #nextId = 1;
+/**
+ * 直连 daemon 的 HTTP /call，等价于 CLI 前端走的那条路。
+ *
+ * 为了让主流程沿用原来 `client.request('tools/call', {name, arguments})` 的写法，
+ * 这里把结果包装成 { content:[{type:'text', text}], isError } —— 与 extractText 期望一致。
+ */
+function makeClient(port) {
+  return {
+    async callTool(tool, args = {}) {
+      const res = await fetch(`http://localhost:${port}/call`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tool, args }),
+      });
+      const body = await res.json();
+      if (res.status !== 200) throw new Error(`/call ${tool} → HTTP ${res.status}: ${body.error ?? ''}`);
+      return { content: [{ type: 'text', text: String(body.text ?? '') }], image: body.image, isError: body.ok === false };
+    },
+    // 兼容旧主流程：只认 tools/call
+    request(method, params) {
+      if (method === 'tools/call') return this.callTool(params.name, params.arguments ?? {});
+      throw new Error(`smoke client 不支持 ${method}`);
+    },
+    /** /call 一个不存在的 tool，daemon 会回 available 列表 —— 用来数 tool 数量。 */
+    async toolNames() {
+      const res = await fetch(`http://localhost:${port}/call`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tool: '__nonexistent__', args: {} }),
+      });
+      return (await res.json()).available ?? [];
+    },
+  };
+}
 
-  constructor(child) {
-    this.#child = child;
-    child.stdout.on('data', (chunk) => this.#onData(chunk));
-  }
-
-  #onData(chunk) {
-    this.#buffer += chunk.toString();
-    let index;
-    while ((index = this.#buffer.indexOf('\n')) >= 0) {
-      const line = this.#buffer.slice(0, index).trim();
-      this.#buffer = this.#buffer.slice(index + 1);
-      if (!line) continue;
-      let msg;
-      try {
-        msg = JSON.parse(line);
-      } catch {
-        continue;
-      }
-      const pending = this.#pending.get(msg.id);
-      if (pending) {
-        this.#pending.delete(msg.id);
-        msg.error ? pending.reject(new Error(JSON.stringify(msg.error))) : pending.resolve(msg.result);
-      }
+/** 轮询 /health 直到 daemon 起来。 */
+async function waitForDaemon(port, deadlineMs = 15000) {
+  const deadline = Date.now() + deadlineMs;
+  for (;;) {
+    try {
+      const res = await fetch(`http://localhost:${port}/health`);
+      const body = await res.json();
+      if (body.service === 'figma-cli') return body;
+    } catch {
+      // 还没起来
     }
-  }
-
-  request(method, params) {
-    const id = this.#nextId++;
-    this.#child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
-    return new Promise((resolve, reject) => {
-      this.#pending.set(id, { resolve, reject });
-      setTimeout(() => reject(new Error(`${method} 超时`)), 15000).unref?.();
-    });
-  }
-
-  notify(method, params) {
-    this.#child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method, params })}\n`);
+    if (Date.now() > deadline) throw new Error('daemon 启动超时');
+    await delay(200);
   }
 }
 
@@ -398,24 +403,19 @@ function check(name, ok, detail = '') {
 async function main() {
   // 固定端口，避免连到真实的常驻 daemon 上
   const PORT = 3064;
-  const child = spawn('node', ['packages/server/dist/index.js'], {
-    stdio: ['pipe', 'pipe', 'inherit'],
-    env: { ...process.env, FIGMA_MCP_LOG_LEVEL: 'warn', FIGMA_MCP_PORT: String(PORT) },
+  const child = spawn('node', ['packages/server/dist/daemon-entry.js'], {
+    stdio: ['ignore', 'inherit', 'inherit'],
+    env: { ...process.env, FIGMA_CLI_LOG_LEVEL: 'warn', FIGMA_CLI_PORT: String(PORT) },
   });
 
-  const client = new StdioClient(child);
+  const client = makeClient(PORT);
 
   try {
-    const init = await client.request('initialize', {
-      protocolVersion: '2025-06-18',
-      capabilities: {},
-      clientInfo: { name: 'smoke', version: '0' },
-    });
-    client.notify('notifications/initialized', {});
-    check('initialize', init.serverInfo?.name === 'figma-mcp', init.serverInfo?.version);
+    const health = await waitForDaemon(PORT);
+    check('daemon 就绪', health.service === 'figma-cli', health.version);
 
-    const { tools } = await client.request('tools/list', {});
-    check('tools/list', tools.length === 15, `${tools.length} 个 tool`);
+    const toolNames = await client.toolNames();
+    check('tool 注册表', toolNames.length === 15, `${toolNames.length} 个 tool`);
 
     // 目标文档不存在时应给出可操作的提示，而不是崩掉。
     // 不用「没有任何连接」来断言 —— Figma 开着时真实插件可能已经连上来了。
@@ -553,12 +553,12 @@ async function main() {
     // 插件回不了消息，请求只能等到超时。
     const cli = async (args) => {
       const { stdout } = await run('node', ['packages/server/dist/cli.js', ...args], {
-        env: { ...process.env, FIGMA_MCP_PORT: String(PORT) },
+        env: { ...process.env, FIGMA_CLI_PORT: String(PORT) },
       });
       return stdout;
     };
     check('CLI docs', (await cli(['docs'])).includes('Smoke Test File'));
-    check('CLI tree 与 MCP 同源', (await cli(['tree', '--doc-id', DOC_ID])).includes('ProductCard'));
+    check('CLI tree 与 HTTP /call 同源', (await cli(['tree', '--doc-id', DOC_ID])).includes('ProductCard'));
     check('CLI --help 不依赖 daemon', (await cli(['tree', '--help'])).includes('--expand-instances'));
 
     // 切图：--out 用相对路径，验证它是按 CLI 的 cwd 解析而不是 daemon 的

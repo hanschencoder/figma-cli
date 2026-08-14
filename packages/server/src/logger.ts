@@ -1,14 +1,14 @@
 /**
  * 日志一律走 stderr。
  *
- * MCP 使用 stdio 传输，stdout 是 JSON-RPC 通道 —— 往里写一个字节的日志
- * 就会让客户端解析失败。这是 stdio MCP server 最容易犯的错。
+ * CLI 的 stdout 只输出 YAML，掺一个字节的日志就会让 `figma-cli tree 2>&1 | yq`
+ * 这类管道解析失败。所以日志无论何时都走 stderr。
  */
 
 const LEVELS = { debug: 10, info: 20, warn: 30, error: 40 } as const;
 type Level = keyof typeof LEVELS;
 
-const envLevel = (process.env.FIGMA_MCP_LOG_LEVEL ?? 'info').toLowerCase() as Level;
+const envLevel = (process.env.FIGMA_CLI_LOG_LEVEL ?? 'info').toLowerCase() as Level;
 const threshold = LEVELS[envLevel] ?? LEVELS.info;
 
 function emit(level: Level, args: unknown[]): void {

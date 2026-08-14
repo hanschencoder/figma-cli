@@ -8,7 +8,7 @@
     "lib": ["ES2020", "DOM"],
     "types": ["@figma/plugin-typings"],
     "paths": {
-      "@figma-mcp/shared": ["../shared/src/index.ts"]
+      "@figma-cli/shared": ["../shared/src/index.ts"]
     }
   },
   "include": ["src/**/*.ts"],

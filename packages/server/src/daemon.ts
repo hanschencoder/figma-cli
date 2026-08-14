@@ -1,7 +1,7 @@
 /**
  * Daemon —— 常驻进程，同时面向两侧：
- *   Figma 插件  ← WebSocket（Hub）
- *   figma CLI   ← HTTP POST /call
+ *   Figma 插件   ← WebSocket（Hub）
+ *   figma-cli    ← HTTP POST /call
  *
  * 为什么必须有它：Figma 插件是 iframe，只能主动发起连接，做不了 server；
  * 而 CLI 是短命进程，等插件重新握手要好几秒。所以中间必须有个常驻的东西。
@@ -12,7 +12,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { ServerResponse } from 'node:http';
-import { STATE_DIR } from '@figma-mcp/shared';
+import { STATE_DIR } from '@figma-cli/shared';
 import { Hub, SERVER_VERSION } from './hub.js';
 import { log } from './logger.js';
 import { DocumentRouter } from './router.js';
@@ -86,7 +86,7 @@ const advertisePath = () => join(homedir(), STATE_DIR, 'daemon.json');
 
 /**
  * 把端口和 pid 落盘。CLI 优先读它，读不到再扫端口段 ——
- * 直接命中比扫 10 个端口快，也让 `figma status` 能报出 pid。
+ * 直接命中比扫 10 个端口快，也让 `figma-cli status` 能报出 pid。
  */
 function advertise(port: number): void {
   try {

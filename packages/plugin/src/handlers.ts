@@ -39,7 +39,7 @@ import {
   type NodeTreeResult,
   type ProtocolError,
   type TextItem,
-} from '@figma-mcp/shared';
+} from '@figma-cli/shared';
 import { ResolveCache, mapPaints } from './collect/common.js';
 import { collectComponents, collectStyles, collectVariables } from './collect/ds.js';
 import { absoluteXY, collectNode, collectStats, type CollectOptions } from './collect/node.js';

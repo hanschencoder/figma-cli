@@ -1,5 +1,5 @@
 {
-  "name": "figma-mcp-monorepo",
+  "name": "figma-cli-monorepo",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -10,10 +10,10 @@
     "node": ">=20"
   },
   "scripts": {
-    "build": "npm run build -w @figma-mcp/shared && npm run build -w @figma-mcp/server && npm run build -w @figma-mcp/plugin",
-    "build:server": "npm run build -w @figma-mcp/server",
-    "build:plugin": "npm run build -w @figma-mcp/plugin",
-    "dev:plugin": "npm run dev -w @figma-mcp/plugin",
+    "build": "npm run build -w @figma-cli/shared && npm run build -w @figma-cli/server && npm run build -w @figma-cli/plugin",
+    "build:server": "npm run build -w @figma-cli/server",
+    "build:plugin": "npm run build -w @figma-cli/plugin",
+    "dev:plugin": "npm run dev -w @figma-cli/plugin",
     "typecheck": "tsc -b packages/shared packages/server packages/plugin",
     "clean": "rm -rf packages/*/dist packages/*/build packages/*/*.tsbuildinfo",
     "smoke": "node scripts/smoke.mjs",

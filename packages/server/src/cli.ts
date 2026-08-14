@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * figma CLI —— AI 和人共用的入口。
+ * figma-cli —— AI 和人共用的入口。
  *
- * 相对 MCP 的两个实际好处：
- *   1. 不占常驻 context。MCP 的 tool 定义每个会话都在，用不用得上都得付；
- *      CLI 只在 skill 被触发时才进入上下文。
- *   2. 可组合。`figma tree --depth 6 > /tmp/t.txt && grep 推荐 /tmp/t.txt`
+ * 两个设计要点：
+ *   1. 不占常驻 context。tool 定义只在 skill 被触发时才进入上下文，
+ *      平时不付这份开销。
+ *   2. 可组合。`figma-cli tree --depth 6 > /tmp/t.txt && grep 推荐 /tmp/t.txt`
  *      —— 大文件下能把绝大部分内容挡在上下文之外。
  *
  * daemon 由本命令按需拉起（见 ensureDaemon），之后常驻复用。
@@ -17,12 +17,12 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
-import { CLIENT_HOST, HEALTH_PATH, PORTS, STATE_DIR } from '@figma-mcp/shared';
+import { CLIENT_HOST, HEALTH_PATH, PORTS, STATE_DIR } from '@figma-cli/shared';
 import { CALL_PATH, SHUTDOWN_PATH } from './daemon.js';
 import { absolutizePathArgs, createTools, type ToolDef } from './tools/registry.js';
 import { yamlOf, type Entry } from './yaml.js';
 
-const BIN = 'figma';
+const BIN = 'figma-cli';
 const SPAWN_TIMEOUT_MS = 15_000;
 const PROBE_TIMEOUT_MS = 700;
 
@@ -188,7 +188,7 @@ function helpAll(): string {
   return [
     `用法: ${BIN} <命令> [参数]`,
     '',
-    '读取 Figma 设计稿。需要 Figma 桌面版打开文件并运行 Figma MCP Bridge 插件。',
+    '读取 Figma 设计稿。需要 Figma 桌面版打开文件并运行 Figma CLI Bridge 插件。',
     '首次执行会自动拉起常驻 daemon。',
     '',
     '命令:',
@@ -268,7 +268,7 @@ async function probe(port: number): Promise<boolean> {
     });
     if (!res.ok) return false;
     const body = (await res.json()) as { service?: string };
-    return body.service === 'figma-mcp';
+    return body.service === 'figma-cli';
   } catch {
     return false;
   } finally {
@@ -281,7 +281,7 @@ const PLUGIN_JOIN_TIMEOUT_MS = 9_000;
 
 async function findDaemon(): Promise<Endpoint | undefined> {
   // 显式指定端口时只认这一个 —— 测试需要隔离到自己的 daemon
-  const pinned = Number(process.env.FIGMA_MCP_PORT);
+  const pinned = Number(process.env.FIGMA_CLI_PORT);
   if (pinned) return (await probe(pinned)) ? { port: pinned } : undefined;
 
   // 先试 daemon.json 记录的端口，命中就省掉扫描
@@ -410,7 +410,7 @@ async function cmdStatus(): Promise<number> {
     ['documents', health.documents.map((d) => [['name', d.name], ['docId', d.docId]] as Entry[])],
   ];
   if (health.documents.length === 0) {
-    out.push(['hint', '没有 Figma 插件连接 —— 在 Figma 里运行 Figma MCP Bridge 插件']);
+    out.push(['hint', '没有 Figma 插件连接 —— 在 Figma 里运行 Figma CLI Bridge 插件']);
   }
   console.log(yamlOf(out));
   return 0;
