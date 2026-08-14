@@ -706,6 +706,7 @@ export function serializeStyles(styles: StyleInfo[]): string {
           );
         }
         if (style.remote) f.set('library', true);
+        if (style.referenced) f.set('source', 'referenced');
         f.set('desc', style.description);
         return flow(f.build());
       }),

@@ -656,12 +656,20 @@ export function createTools(ctx: ToolContext): ToolDef[] {
     {
       name: 'get_styles',
       cli: 'styles',
-      title: '导出本地样式',
-      description: '导出 Paint / Text / Effect / Grid 样式。节点输出里的 @name 就是这些样式。',
+      title: '导出样式定义',
+      description:
+        '导出 Paint / Text / Effect / Grid 样式的定义。节点输出里的 @name 就是这些样式，' +
+        '这里给出它们对应的字号 / 行高 / 字重 / 色值 / 阴影参数。\n' +
+        '本文件定义的样式全都列出；定义在远端库里的，列出当前页实际引用到的那些' +
+        '（标记 source: referenced）—— 那正是照着这页写代码时需要的。',
       schema: {
         ...docIdArg,
         type: z.enum(['PAINT', 'TEXT', 'EFFECT', 'GRID']).optional().describe('只导出某一类'),
         limit: z.number().int().min(1).max(2000).optional().describe('上限，默认 400'),
+        scan: z
+          .boolean()
+          .optional()
+          .describe('扫当前页，反查实际引用到的远端样式定义，默认 true'),
       },
       run: async (args) =>
         guard(async () => {
@@ -669,9 +677,17 @@ export function createTools(ctx: ToolContext): ToolDef[] {
           const { result } = await hub.request(target, Method.DsStyles, {
             type: args.type as 'PAINT' | 'TEXT' | 'EFFECT' | 'GRID' | undefined,
             limit: args.limit as number | undefined,
+            scan: args.scan as boolean | undefined,
           });
-          const body = serializeStyles(result.styles);
-          return ok(result.truncated ? body + note('样式数量超过上限，已截断') : body);
+          let body = serializeStyles(result.styles);
+          if (result.truncated) body += note('样式数量超过上限，已截断');
+          // 同变量：拿到了就别解释，一个都没有时才说明原因
+          if (result.styles.length === 0 && args.scan !== false && result.scanned === undefined) {
+            body += note(
+              '插件没有返回反查结果 —— Figma 里跑的多半还是旧版插件，关掉插件窗口重开',
+            );
+          }
+          return ok(body);
         }),
     },
 

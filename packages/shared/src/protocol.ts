@@ -333,10 +333,14 @@ export interface DsVariablesResult {
 export interface DsStylesParams {
   type?: 'PAINT' | 'TEXT' | 'EFFECT' | 'GRID';
   limit?: number;
+  /** 从当前页实际引用到的 styleId 反查样式定义，默认 true。理由同 DsVariablesParams.scan */
+  scan?: boolean;
 }
 export interface DsStylesResult {
   styles: StyleInfo[];
   truncated?: boolean;
+  /** 反查时扫过的节点数；字段缺失说明插件没做这一步（旧版插件） */
+  scanned?: number;
 }
 
 export interface DsComponentsParams {

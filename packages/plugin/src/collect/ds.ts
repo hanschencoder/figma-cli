@@ -328,8 +328,8 @@ async function mapVariableValue(
 
 export async function collectStyles(
   cache: ResolveCache,
-  opts: { type?: StyleInfo['type']; limit: number },
-): Promise<{ styles: StyleInfo[]; truncated: boolean }> {
+  opts: { type?: StyleInfo['type']; limit: number; scan?: boolean },
+): Promise<{ styles: StyleInfo[]; truncated: boolean; scanned?: number }> {
   const out: StyleInfo[] = [];
   let truncated = false;
 
@@ -367,12 +367,106 @@ export async function collectStyles(
     }
   }
 
+  // 和变量同一个问题：样式基本都定义在远端库里，getLocal* 只给本文件的。
+  // 节点上的 fillStyleId / textStyleId 拿去 getStyleByIdAsync 对远端样式同样有效，
+  // 所以扫一遍页面就能把「实际用到的那些样式」的完整定义反查出来。
+  let scanned: number | undefined;
+  if (opts.scan !== false) {
+    const known = new Set(out.map((style) => style.id));
+    const { styles: referenced, nodes } = await collectReferencedStyles(cache, opts, known);
+    out.push(...referenced);
+    scanned = nodes;
+  }
+
   if (out.length > opts.limit) {
     out.length = opts.limit;
     truncated = true;
   }
 
-  return { styles: out, truncated };
+  return { styles: out, truncated, scanned };
+}
+
+/** 节点上可能挂样式的字段。mixed（富文本里多段不同样式）直接跳过。 */
+const STYLE_FIELDS = [
+  'fillStyleId',
+  'strokeStyleId',
+  'textStyleId',
+  'effectStyleId',
+  'gridStyleId',
+] as const;
+
+function nodeStyleIds(node: SceneNode): string[] {
+  const out: string[] = [];
+  for (const field of STYLE_FIELDS) {
+    const value = (node as unknown as Record<string, unknown>)[field];
+    if (typeof value === 'string' && value) out.push(value);
+  }
+  return out;
+}
+
+async function collectReferencedStyles(
+  cache: ResolveCache,
+  opts: { type?: StyleInfo['type']; limit: number },
+  known: Set<string>,
+): Promise<{ styles: StyleInfo[]; nodes: number }> {
+  const page = figma.currentPage;
+  const nodes = 'findAll' in page ? page.findAll((n) => nodeStyleIds(n).length > 0) : [];
+
+  const ids = new Set<string>();
+  for (const node of nodes.slice(0, SCAN_NODE_LIMIT)) {
+    for (const id of nodeStyleIds(node)) {
+      if (!known.has(id)) ids.add(id);
+    }
+  }
+
+  const wants = (t: StyleInfo['type']) => !opts.type || opts.type === t;
+  const out: StyleInfo[] = [];
+
+  for (const id of ids) {
+    if (out.length >= opts.limit) break;
+    const style = await figma.getStyleByIdAsync(id);
+    if (!style) continue;
+
+    switch (style.type) {
+      case 'PAINT': {
+        if (!wants('PAINT')) continue;
+        const info = base(style, 'PAINT');
+        const paints = await mapPaints((style as PaintStyle).paints, undefined, cache);
+        if (paints) info.paints = paints;
+        info.referenced = true;
+        out.push(info);
+        break;
+      }
+      case 'TEXT': {
+        if (!wants('TEXT')) continue;
+        const info = base(style, 'TEXT');
+        info.text = textStyleInfo(style as TextStyle);
+        info.referenced = true;
+        out.push(info);
+        break;
+      }
+      case 'EFFECT': {
+        if (!wants('EFFECT')) continue;
+        const info = base(style, 'EFFECT');
+        const effects = await mapEffects((style as EffectStyle).effects, undefined, cache);
+        if (effects) info.effects = effects;
+        info.referenced = true;
+        out.push(info);
+        break;
+      }
+      case 'GRID': {
+        if (!wants('GRID')) continue;
+        const info = base(style, 'GRID');
+        info.referenced = true;
+        out.push(info);
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  return { styles: out, nodes: Math.min(nodes.length, SCAN_NODE_LIMIT) };
 }
 
 function base(style: BaseStyle, type: StyleInfo['type']): StyleInfo {

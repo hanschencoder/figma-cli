@@ -279,6 +279,8 @@ export interface StyleInfo {
   type: 'PAINT' | 'TEXT' | 'EFFECT' | 'GRID';
   description?: string;
   remote?: boolean;
+  /** 从页面上实际引用到的 styleId 反查出来的，不是本文件定义的 */
+  referenced?: boolean;
   paints?: PaintInfo[];
   text?: TextInfo;
   effects?: EffectInfo[];

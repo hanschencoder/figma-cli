@@ -471,12 +471,14 @@ async function dsVariables(params: DsVariablesParams): Promise<DsVariablesResult
 
 async function dsStyles(params: DsStylesParams): Promise<DsStylesResult> {
   const cache = new ResolveCache();
-  const { styles, truncated } = await collectStyles(cache, {
+  const { styles, truncated, scanned } = await collectStyles(cache, {
     type: params?.type,
     limit: params?.limit ?? DEFAULT_STYLE_LIMIT,
+    scan: params?.scan,
   });
   const result: DsStylesResult = { styles };
   if (truncated) result.truncated = true;
+  if (scanned !== undefined) result.scanned = scanned;
   return result;
 }
 
