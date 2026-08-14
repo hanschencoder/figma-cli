@@ -1,41 +1,33 @@
 #!/usr/bin/env node
 /**
- * MCP server 入口。
+ * MCP stdio 入口（可选前端）。
  *
- * 单进程同时承担两件事：
- *   - 对 AI 客户端：stdio 上的 MCP server
- *   - 对 Figma 插件：内嵌的 WS Hub（端口段 3055–3064）
+ * 主推的用法是 `figma` CLI + skill —— MCP 的 tool 定义每个会话都常驻 context，
+ * 用不用得上都得付这份开销。这个入口保留下来，是为了不能跑命令行的客户端，
+ * 以及万一想换回去。
  *
- * 之所以不拆独立 relay 守护进程，是因为目标场景是单 MCP 客户端。
- * 多个 Figma 文档并行由 Hub 的连接注册表解决，不需要额外进程。
+ * 它复用同一个 daemon（Hub + tools + HTTP /call），所以启动 MCP server 的同时，
+ * `figma` CLI 也能直接用这个进程，不会再多拉一个。
  */
 
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { TOKEN_DIR } from '@figma-mcp/shared';
-import { loadOrCreateAuth } from './auth.js';
-import { Hub, SERVER_VERSION } from './hub.js';
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { startDaemon } from './daemon.js';
+import { SERVER_VERSION } from './hub.js';
 import { log } from './logger.js';
-import { DocumentRouter } from './router.js';
-import { registerTools } from './tools/index.js';
+import type { ToolDef } from './tools/registry.js';
 
 async function main(): Promise<void> {
-  const auth = loadOrCreateAuth();
-  const hub = new Hub(auth);
-  const port = await hub.start();
+  const daemon = await startDaemon();
 
-  if (auth.enabled) {
-    log.info(`配对 token: ${auth.token}（也在 ${auth.tokenPath}）`);
+  if (daemon.auth.enabled) {
+    log.info(`配对 token: ${daemon.auth.token}（也在 ${daemon.auth.tokenPath}）`);
   } else {
     log.warn('已通过 FIGMA_MCP_NO_AUTH=1 关闭配对校验');
   }
 
-  advertisePort(port);
-
-  const router = new DocumentRouter(hub);
   const server = new McpServer(
     { name: 'figma-mcp', version: SERVER_VERSION },
     {
@@ -49,37 +41,45 @@ async function main(): Promise<void> {
     },
   );
 
-  registerTools(server, { hub, router });
+  for (const tool of daemon.tools) register(server, tool);
 
   const shutdown = (signal: string) => {
     log.info(`收到 ${signal}，退出中`);
-    void hub.stop().finally(() => process.exit(0));
-    // 兜底：优雅关闭卡住时也要退出，否则会变成占着端口的僵尸进程
+    void daemon.stop().finally(() => process.exit(0));
+    // 优雅关闭卡住时也要退出，否则会变成占着端口的僵尸进程
     setTimeout(() => process.exit(0), 2000).unref();
   };
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
 
   await server.connect(new StdioServerTransport());
-  log.info(`figma-mcp ${SERVER_VERSION} 已就绪（WS 端口 ${port}）`);
+  log.info(`figma-mcp ${SERVER_VERSION} 已就绪（WS 端口 ${daemon.port}）`);
 }
 
-/**
- * 把实际绑定的端口写到 ~/.figma-mcp/last-port。
- * 插件自己会扫描端口段，这份文件是给人和调试脚本看的 ——
- * 端口降级后知道 server 到底落在哪个端口上。
- */
-function advertisePort(port: number): void {
-  try {
-    const dir = join(homedir(), TOKEN_DIR);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(
-      join(dir, 'last-port'),
-      `${JSON.stringify({ port, pid: process.pid, startedAt: new Date().toISOString() })}\n`,
-    );
-  } catch (err) {
-    log.debug('写 last-port 失败（不影响主流程）:', String(err));
-  }
+function register(server: McpServer, tool: ToolDef): void {
+  server.registerTool(
+    tool.name,
+    { title: tool.title, description: tool.description, inputSchema: tool.schema },
+    async (args: Record<string, unknown>) => {
+      const result = await tool.run(args);
+      const content: CallToolResult['content'] = [{ type: 'text', text: result.text }];
+
+      // MCP 能直接内联图片，比 CLI 让模型自己去 Read 文件少一步
+      if (result.image) {
+        try {
+          content.push({
+            type: 'image',
+            data: readFileSync(result.image.path).toString('base64'),
+            mimeType: result.image.mime,
+          });
+        } catch (err) {
+          log.warn('读取导出图片失败，仅返回路径:', String(err));
+        }
+      }
+
+      return result.isError ? { content, isError: true } : { content };
+    },
+  );
 }
 
 main().catch((err) => {

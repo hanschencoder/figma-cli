@@ -1,6 +1,6 @@
 # figma-mcp
 
-一套自建的 Figma ↔ AI 通道：**Figma 插件**直接读取本地打开的设计文档，通过 **WebSocket** 与本地 **MCP Server** 通信，把设计稿以低 token 成本、高保真的形式交给 AI 模型。
+一套自建的 Figma ↔ AI 通道：**Figma 插件**直接读取本地打开的设计文档，通过 **WebSocket** 与本地 **daemon** 通信，`figma` CLI + skill 把设计稿以低 token 成本、高保真的形式交给 AI 模型。
 
 ---
 
@@ -42,31 +42,43 @@
 Figma 插件有一条硬约束：`code.js`（沙箱主线程，能调 `figma.*`）**没有网络能力**；只有 `ui.html`（iframe）能发起 WebSocket，且域名必须在 manifest 的 `networkAccess.allowedDomains` 中声明。所以链路必然是三段式：
 
 ```
-Claude Code / 其他 MCP 客户端
-   │  stdio (MCP)
+AI（读 skill 后调用命令）
+   │  figma tree --depth 3
    ▼
-MCP Server (Node/TS)  ── 内嵌 WS Server + HTTP /health
-   │  ws://127.0.0.1:3055~3064
-   ├──────────────────────────►  Plugin@文档A
-   └──────────────────────────►  Plugin@文档B
-                                     │  figma.ui.postMessage
-                                     ▼
-                                 Plugin Sandbox  ──►  figma.*
+figma CLI ──HTTP POST /call──►  daemon（常驻）
+                                  │  内嵌 WS Server + HTTP /health
+                                  │  ws://localhost:3055~3064
+                                  ├───────────────►  Plugin@文档A
+                                  └───────────────►  Plugin@文档B
+                                                        │  figma.ui.postMessage
+                                                        ▼
+                                                    Plugin Sandbox ──► figma.*
 ```
 
-### 为什么不做独立 relay 守护进程
+### 为什么必须有 daemon
 
-因为目标是**单 MCP 客户端**。单客户端意味着只有一个 server 进程，直接内嵌 WS server 最简单。多个 Figma 文档并行是**插件侧多连接**（多个插件实例连同一个 server），由 server 的连接注册表解决，不需要额外进程。
+**Figma 插件不能监听端口。** 插件 UI 是 iframe，只能主动发起连接（WebSocket client、fetch），做不了 server。而 CLI 是短命进程，每次执行都等插件重新握手要好几秒。所以中间必须有个常驻进程。
 
-> 如果将来要支持多客户端并存（Claude Code + Cursor 同时用），需要改成独立 relay，或者让插件扫描并连接多个端口。当前端口段设计已经为后者留好了空间。
+CLI 首次执行时自动 spawn detached 把它拉起来（约 0.4s），之后所有命令都是毫秒级。`figma status` / `figma stop` 管理它。
+
+### 为什么是 CLI 而不是 MCP
+
+MCP 前端仍然保留（`packages/server/dist/index.js`），但主推 CLI + skill：
+
+1. **Context 成本**。MCP 的 11 个 tool 定义**每个会话都常驻 context**，不管这次用不用 Figma，粗算 2000+ token 的固定开销。skill 是按需加载的。
+2. **可组合**。`figma tree --depth 8 > /tmp/t.txt && grep 推荐 /tmp/t.txt` —— 几百个节点的大树能挡在上下文之外，只把命中的行读进来。这对「设计稿转代码」是数量级的差别。
+
+代价是图片：MCP 能直接返回 image content block，CLI 只能落盘 + 打印路径，让 AI 自己 `Read`。多一步，但可用。
+
+两个前端共用同一套 `tools/registry.ts`——同一份参数 schema、同一份实现、同一份描述文本。CLI 的 `--help` 就是从 schema 生成的，不会漂移。
 
 ### 多文档路由规则
 
 绝不静默猜测当前该操作哪个文档：
 
-- `list_documents()` 列出所有已连接的 Figma 文档
+- `figma docs` 列出所有已连接的 Figma 文档
 - 只有一个连接时自动使用，无需指定
-- 多个连接且未显式选择时 → **报错并列出候选**，要求先 `select_document(id)`
+- 多个连接且未显式选择时 → **报错并列出候选**，要求先 `figma use <docId>`
 
 ---
 
@@ -93,18 +105,19 @@ Frame "ProductCard" #12:34  340x420 autoV gap=16 pad=20 fill=$surface/card radiu
 ### 2. 插件侧裁剪，Server 侧格式化
 
 - **插件侧**只做字段白名单裁剪，回传精简的中间 JSON（省 WS 带宽，避开大对象序列化开销）
-- **Server 侧**负责把中间 JSON 转成 DSL 文本
+- **daemon 侧**负责把中间 JSON 转成 DSL 文本
 
-理由很实际：插件每改一行都要重新 build 并在 Figma 里重载，迭代很慢；而输出格式恰恰是最需要反复调试的部分。放在 server 侧，改完重启 MCP 就生效。
+理由很实际：插件每改一行都要重新 build 并在 Figma 里重载，迭代很慢；而输出格式恰恰是最需要反复调试的部分。放在 daemon 侧，`npm run build && figma stop` 就生效。
 
 ### 3. 上下文预算是第一约束
 
 一个中等复杂的 Frame，完整节点树 JSON 轻松几 MB，直接扔给模型必然爆 context。对策：
 
-- **分层读取** —— `get_node_tree(id, depth=2)`，深层只给 `id/name/type`，按需下钻
+- **分层读取** —— `figma tree <id> --depth 2`，深层只给 `id/name/type`，按需下钻
 - **字段白名单** —— 默认只返回布局相关属性，不返回完整 `fills`/`effects`/`vectorPaths`
 - **语义化压缩** —— 上面的 DSL
-- **先定位再细看** —— `search_nodes` 找到目标再 `get_node_detail`，避免全树遍历
+- **先定位再细看** —— `figma find` 找到目标再 `figma node`，避免全树遍历
+- **落盘再检索** —— 大树重定向到文件后 grep，只把命中行读进上下文（这是 CLI 相对 MCP 的核心优势）
 
 ### 4. 远端变量只做引用还原
 
@@ -121,7 +134,7 @@ node.boundVariables.fills[0].id
 
 `resolveForConsumer` 正好是为这个场景设计的，对远端变量同样有效。Style 同理走 `getStyleByIdAsync` 拿 name。
 
-`get_variables` 分两档：本地集合给完整结构（含所有 mode）；远端变量只在被引用时以「名字 + 解析值」出现。
+`figma vars` 分两档：本地集合给完整结构（含所有 mode）；远端变量只在被引用时以「名字 + 解析值」出现。
 
 ### 5. 图像作为核心能力
 
@@ -182,63 +195,65 @@ Figma **桌面版** → `Plugins` → `Development` → `Import plugin from mani
 > 改了插件代码只需重新 `npm run build:plugin` 并重开插件窗口；
 > **但改了 `manifest.json` 必须重新 Import** —— Figma 在应用级缓存插件文件。
 
-### 3. 配置 MCP 客户端
-
-> **注意 server 的生命周期**：它不是常驻服务，而是由 MCP 客户端按需拉起的 stdio 子进程。
-> 客户端没启动它，端口段上就什么都没有，插件会一直停在「等待 SERVER」。
-
-Claude Code（在项目目录下执行，`-s user` 表示对所有项目生效）：
+### 3. 安装 CLI 与 skill
 
 ```bash
-claude mcp add figma -s user -- node "$PWD/packages/server/dist/index.js"
+npm link -w @figma-mcp/server                       # 把 figma 命令装到 PATH
+ln -s "$PWD/skills/figma" ~/.claude/skills/figma    # 装 skill（用户级，所有项目可用）
 ```
 
 验证：
 
 ```bash
-claude mcp list       # 应看到 figma
-```
-
-其它客户端手写配置：
-
-```json
-{
-  "mcpServers": {
-    "figma": {
-      "command": "node",
-      "args": ["/绝对路径/figma-mcp/packages/server/dist/index.js"]
-    }
-  }
-}
-```
-
-**只想单独把 server 跑起来验证插件能不能连上**（不接任何 AI 客户端）：
-
-```bash
-npm run server        # 前台常驻，Ctrl-C 退出
+figma --help
+figma status
 ```
 
 ### 4. 配对
 
-server 首次启动会生成 `~/.figma-mcp/token`。把里面的内容粘贴到插件面板的输入框，点保存。
+daemon 首次启动会生成 `~/.figma-mcp/token`。把里面的内容粘贴到插件面板的输入框，点保存。
 之后 token 存在 `figma.clientStorage` 里，不用再输。
 
 本机独占调试时可以用 `FIGMA_MCP_NO_AUTH=1` 跳过。
+
+### 5. 用起来
+
+```bash
+figma ctx                      # 看用户选中了什么
+figma tree --depth 3           # 读结构
+figma image 1:3635             # 导出截图
+figma vars                     # design token
+```
+
+daemon 会在第一条命令时自动拉起并常驻，不需要手动管理。
+
+### 可选：MCP 前端
+
+不能跑命令行的客户端可以用 MCP：
+
+```bash
+claude mcp add figma -s user -- node "$PWD/packages/server/dist/index.js"
+```
+
+它复用同一套 tools，且启动时也会把 daemon 带起来（`figma` CLI 会直接复用那个进程）。
+但 tool 定义会常驻每个会话的 context —— 这正是主推 CLI 的原因。
 
 ### 环境变量
 
 | 变量 | 说明 |
 |---|---|
-| `FIGMA_MCP_PORT` | 优先尝试的端口，仍在 3055–3064 段内降级 |
+| `FIGMA_MCP_PORT` | 固定端口（CLI 也只认这个端口，用于测试隔离） |
 | `FIGMA_MCP_NO_AUTH` | `1` 关闭配对校验 |
 | `FIGMA_MCP_LOG_LEVEL` | `debug` / `info` / `warn` / `error`，日志走 stderr |
 
 ### 排查
 
-- `~/.figma-mcp/last-port` 记录 server 实际绑定的端口
-- `curl http://127.0.0.1:3055/health` 看 server 是否活着、有哪些文档连上来
+- `figma status` —— daemon 端口、pid、已连接文档
+- `~/.figma-mcp/daemon.log` —— daemon 的输出（自动拉起时看这里）
+- `~/.figma-mcp/daemon.json` —— 当前 daemon 的端口与 pid
+- `curl http://localhost:3055/health` —— 直接看 daemon 状态
 - 插件面板的「日志」按钮展开活动日志
-- `npm run smoke` 用假插件跑全链路，不需要打开 Figma —— 用来区分是 server 侧还是 Figma 侧的问题
+- `npm run smoke` —— 假插件跑全链路（MCP + CLI 两个前端），不需要打开 Figma，用来区分是 daemon 侧还是 Figma 侧的问题
 
 ---
 
@@ -248,40 +263,33 @@ server 首次启动会生成 `~/.figma-mcp/token`。把里面的内容粘贴到�
 figma-mcp/
 ├─ packages/
 │  ├─ shared/     协议类型定义（两端共用）
-│  ├─ server/     MCP server + WS Hub + tools + DSL 序列化
+│  ├─ server/     daemon + WS Hub + tools 注册表 + DSL；两个前端 cli.ts / index.ts(MCP)
 │  └─ plugin/     manifest.json + code.ts（沙箱）+ ui.html/ui.ts
+├─ skills/figma/  给 AI 的使用说明（软链到 ~/.claude/skills/）
+└─ scripts/       smoke.mjs 全链路冒烟
 ```
 
 技术栈：TypeScript · `@modelcontextprotocol/sdk` · `@figma/plugin-typings` · esbuild · npm workspaces
 
 ---
 
-## 八、v1 Tool 清单
+## 八、命令清单
 
-### 定位与导航
-| Tool | 说明 |
-|---|---|
-| `list_documents` | 列出已连接的 Figma 文档 |
-| `select_document` | 多文档时指定目标 |
-| `get_current_context` | 文件名、页面列表、当前页、当前选中项摘要 —— **AI 的入口** |
-| `get_node_tree` | 分层展开结构，深层只给 id/name/type |
-| `search_nodes` | 按名称/类型查找，避免全树遍历 |
+| 命令 | MCP tool 名 | 说明 |
+|---|---|---|
+| `figma docs` | `list_documents` | 列出已连接的 Figma 文档 |
+| `figma use <docId>` | `select_document` | 多文档时指定目标 |
+| `figma ctx` | `get_current_context` | 文件/页面/当前选中项 —— **入口** |
+| `figma tree [id]` | `get_node_tree` | 分层展开结构 |
+| `figma find <关键词>` | `search_nodes` | 按名称/类型定位 |
+| `figma node <id>...` | `get_node_detail` | 完整属性 |
+| `figma text [id]` | `get_text_content` | 抽取全部文案 |
+| `figma image <id>` | `get_node_image` | 导出 PNG |
+| `figma vars` | `get_variables` | 变量集合与各 mode 的值 |
+| `figma styles` | `get_styles` | Paint / Text / Effect / Grid |
+| `figma components` | `get_components` | 组件与变体清单 |
 
-### 读取细节
-| Tool | 说明 |
-|---|---|
-| `get_node_detail` | 单/多节点完整属性：尺寸、autolayout、constraints、fill/stroke/effect、文本样式 |
-| `get_text_content` | 一次性抽出子树所有文案 |
-| `get_node_image` | 渲染节点为 PNG 回传 |
-
-### 设计系统
-| Tool | 说明 |
-|---|---|
-| `get_variables` | 变量集合 + 各 mode 的值 |
-| `get_styles` | Paint / Text / Effect / Grid styles |
-| `get_components` | 组件与变体清单，含 variant properties |
-
----
+CLI 也接受 MCP 名（`figma get_node_tree` 等价于 `figma tree`）。
 
 ## 九、v1 明确不做
 
@@ -289,7 +297,7 @@ figma-mcp/
 - Dev Mode 深度集成
 - CI / 无头运行
 - 跨文件 Library 的完整导出
-- 多 MCP 客户端并存
+- 多客户端并存下的 daemon 抢占（当前是先到先得，后来的复用同一个）
 - 任意 JS 执行（`figma_execute` 式的逃生舱）—— 强大但不可控，不进 v1
 
 ---

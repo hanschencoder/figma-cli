@@ -83,9 +83,17 @@ export interface RequestOptions {
   timeoutMs?: number;
 }
 
+export type RouteHandler = (
+  req: IncomingMessage,
+  res: import('node:http').ServerResponse,
+  body: string,
+) => Promise<void> | void;
+
 export class Hub {
   /** 同一端口上的多个监听（IPv4 / IPv6 回环），共用一个 WebSocketServer */
   private servers: Server[] = [];
+  /** 上层注册的额外路由，键是 "METHOD /path" */
+  private routes = new Map<string, RouteHandler>();
   private wss?: WebSocketServer;
   private heartbeat?: NodeJS.Timeout;
   /** docId → client。同一文档重连时替换旧连接。 */
@@ -96,6 +104,11 @@ export class Hub {
 
   get port(): number {
     return this._port;
+  }
+
+  /** 注册额外 HTTP 路由。daemon 的 /call、/shutdown 走这里，Hub 本身不关心。 */
+  addRoute(method: string, path: string, handler: RouteHandler): void {
+    this.routes.set(`${method.toUpperCase()} ${path}`, handler);
   }
 
   async start(): Promise<number> {
@@ -259,6 +272,19 @@ export class Hub {
     }
 
     const path = (req.url ?? '').split('?')[0];
+
+    const route = this.routes.get(`${req.method ?? 'GET'} ${path}`);
+    if (route) {
+      readBody(req)
+        .then((body) => route(req, res, body))
+        .catch((err) => {
+          log.error('路由处理失败:', err);
+          if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: String(err) }));
+        });
+      return;
+    }
+
     if (path === HEALTH_PATH) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(
@@ -467,6 +493,15 @@ export class Hub {
     if (socket.readyState !== WebSocket.OPEN) return;
     socket.send(JSON.stringify(msg));
   }
+}
+
+function readBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', reject);
+  });
 }
 
 /** 供插件侧复用的分片大小（这里导出只是为了让 server 侧断言一致）。 */

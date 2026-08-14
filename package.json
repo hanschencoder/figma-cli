@@ -17,7 +17,7 @@
     "typecheck": "tsc -b packages/shared packages/server packages/plugin",
     "clean": "rm -rf packages/*/dist packages/*/build packages/*/*.tsbuildinfo",
     "smoke": "node scripts/smoke.mjs",
-    "server": "node packages/server/dist/index.js"
+    "server": "node packages/server/dist/daemon-entry.js"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

@@ -9,12 +9,15 @@
  *   node scripts/smoke.mjs
  */
 
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import { promisify } from 'node:util';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { WebSocket } from 'ws';
+
+const run = promisify(execFile);
 
 const PROTOCOL = 1;
 const DOC_ID = 'smoke-doc-1';
@@ -273,9 +276,11 @@ function check(name, ok, detail = '') {
 }
 
 async function main() {
+  // 固定端口，避免连到真实的常驻 daemon 上
+  const PORT = 3064;
   const child = spawn('node', ['packages/server/dist/index.js'], {
     stdio: ['pipe', 'pipe', 'inherit'],
-    env: { ...process.env, FIGMA_MCP_LOG_LEVEL: 'warn' },
+    env: { ...process.env, FIGMA_MCP_LOG_LEVEL: 'warn', FIGMA_MCP_PORT: String(PORT) },
   });
 
   const client = new StdioClient(child);
@@ -300,9 +305,8 @@ async function main() {
     });
     check('未知 docId 报 NOT_FOUND', extractText(missing).includes('NOT_FOUND'));
 
-    const port = JSON.parse(readFileSync(join(homedir(), '.figma-mcp', 'last-port'), 'utf8')).port;
     const token = readFileSync(join(homedir(), '.figma-mcp', 'token'), 'utf8').trim();
-    const ws = await connectFakePlugin(port, token);
+    const ws = await connectFakePlugin(PORT, token);
     await delay(150);
     check('假插件握手成功', ws.readyState === WebSocket.OPEN);
 
@@ -332,6 +336,19 @@ async function main() {
       check(name, !res.isError, `${body.length} 字符`);
       console.log(indent(body));
     }
+
+    // CLI 前端走同一个 daemon 的 HTTP /call，验证两个前端结果一致。
+    // 必须异步 —— 假插件就跑在本进程里，execFileSync 会把事件循环堵死，
+    // 插件回不了消息，请求只能等到超时。
+    const cli = async (args) => {
+      const { stdout } = await run('node', ['packages/server/dist/cli.js', ...args], {
+        env: { ...process.env, FIGMA_MCP_PORT: String(PORT) },
+      });
+      return stdout;
+    };
+    check('CLI docs', (await cli(['docs'])).includes('Smoke Test File'));
+    check('CLI tree 与 MCP 同源', (await cli(['tree', '--doc-id', DOC_ID])).includes('ProductCard'));
+    check('CLI --help 不依赖 daemon', (await cli(['tree', '--help'])).includes('--expand-instances'));
 
     ws.close();
   } finally {
