@@ -11,6 +11,7 @@
 
 import {
   CHUNK_SIZE,
+  CLIENT_HOST,
   HEALTH_PATH,
   PORTS,
   PROTOCOL_VERSION,
@@ -25,7 +26,6 @@ import {
 import type { SandboxToUi, UiToSandbox } from './bridge-types.js';
 
 const PLUGIN_VERSION = '0.1.0';
-const HOST = '127.0.0.1';
 const SCAN_INTERVAL_MS = 5_000;
 const PROBE_TIMEOUT_MS = 800;
 
@@ -201,7 +201,7 @@ async function probe(port: number): Promise<boolean> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
   try {
-    const res = await fetch(`http://${HOST}:${port}${HEALTH_PATH}`, {
+    const res = await fetch(`http://${CLIENT_HOST}:${port}${HEALTH_PATH}`, {
       signal: controller.signal,
       cache: 'no-store',
     });
@@ -234,7 +234,7 @@ async function scan(): Promise<void> {
 function connect(port: number): void {
   if (conns.has(port) || !doc) return;
 
-  const ws = new WebSocket(`ws://${HOST}:${port}${WS_PATH}`);
+  const ws = new WebSocket(`ws://${CLIENT_HOST}:${port}${WS_PATH}`);
   const conn: Conn = { port, ws, ready: false };
   conns.set(port, conn);
   render();

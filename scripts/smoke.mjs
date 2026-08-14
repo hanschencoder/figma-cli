@@ -205,7 +205,7 @@ class StdioClient {
 
 function connectFakePlugin(port, token) {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/bridge`);
+    const ws = new WebSocket(`ws://localhost:${port}/bridge`);
     const timer = setTimeout(() => reject(new Error('插件握手超时')), 8000);
 
     ws.on('open', () => {

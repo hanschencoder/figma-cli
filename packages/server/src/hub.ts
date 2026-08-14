@@ -1,24 +1,29 @@
 /**
  * WS Hub —— server 侧与 Figma 插件通信的全部机制。
  *
- * 一个 HTTP server 同时提供：
+ * 同一个端口上同时提供：
  *   GET /health   插件先探活再建 WS。比直接连 WS 试错快得多，
  *                 端口段扫描才不会在每个空端口上卡住 TCP 超时。
  *   WS  /bridge   实际的双向通道。
  *
  * 端口从 3055 起逐个尝试，占用则降级到 3064。manifest 里整段都放行了，
  * 所以换端口不需要重新 Import 插件。
+ *
+ * 每个端口会绑两次（127.0.0.1 和 ::1），共用同一个 WebSocketServer，
+ * 这样插件连 localhost 时无论解析到哪个协议栈都能连上。
  */
 
 import { createServer, type IncomingMessage, type Server } from 'node:http';
+import type { Duplex } from 'node:stream';
 import { randomUUID } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import {
+  BIND_HOSTS,
   CHUNK_SIZE,
+  CLIENT_HOST,
   DEFAULT_REQUEST_TIMEOUT_MS,
   ErrorCode,
   HEALTH_PATH,
-  HOST,
   Method,
   PORTS,
   PROTOCOL_VERSION,
@@ -79,7 +84,8 @@ export interface RequestOptions {
 }
 
 export class Hub {
-  private http?: Server;
+  /** 同一端口上的多个监听（IPv4 / IPv6 回环），共用一个 WebSocketServer */
+  private servers: Server[] = [];
   private wss?: WebSocketServer;
   private heartbeat?: NodeJS.Timeout;
   /** docId → client。同一文档重连时替换旧连接。 */
@@ -98,34 +104,44 @@ export class Hub {
       ? [preferred, ...PORTS.filter((p) => p !== preferred)]
       : [...PORTS];
 
+    const [primaryHost, ...extraHosts] = BIND_HOSTS;
+
     for (const port of candidates) {
-      try {
-        this.http = await this.listen(port);
-        this._port = port;
-        break;
-      } catch (err) {
-        const code = (err as NodeJS.ErrnoException).code;
-        if (code === 'EADDRINUSE' || code === 'EACCES') {
-          log.debug(`端口 ${port} 不可用（${code}），尝试下一个`);
-          continue;
-        }
-        throw err;
+      // 主协议栈绑不上就换端口；能绑上就认定这个端口归我们
+      const primary = await this.tryListen(port, primaryHost!);
+      if (!primary) continue;
+
+      this.servers.push(primary);
+      this._port = port;
+
+      for (const host of extraHosts) {
+        const extra = await this.tryListen(port, host);
+        if (extra) this.servers.push(extra);
+        else log.warn(`未能在 ${host}:${port} 上监听；若插件的 localhost 解析到该地址会连不上`);
       }
+      break;
     }
 
-    if (!this.http) {
+    if (this.servers.length === 0) {
       throw new Error(
         `端口段 ${PORTS[0]}-${PORTS[PORTS.length - 1]} 全部被占用，无法启动 WS Hub`,
       );
     }
 
-    this.wss = new WebSocketServer({ server: this.http, path: WS_PATH });
+    // noServer 模式：多个监听共用一个 WebSocketServer，各自转交 upgrade
+    this.wss = new WebSocketServer({ noServer: true });
     this.wss.on('connection', (socket, req) => this.onConnection(socket, req));
+    for (const server of this.servers) {
+      server.on('upgrade', (req, socket, head) => this.onUpgrade(req, socket, head));
+    }
 
     this.heartbeat = setInterval(() => this.sweep(), HEARTBEAT_INTERVAL_MS);
     this.heartbeat.unref();
 
-    log.info(`WS Hub 就绪  ws://${HOST}:${this._port}${WS_PATH}`);
+    log.info(
+      `WS Hub 就绪  ws://${CLIENT_HOST}:${this._port}${WS_PATH}` +
+        `  (监听 ${this.servers.length} 个回环地址)`,
+    );
     return this._port;
   }
 
@@ -135,12 +151,17 @@ export class Hub {
       client.socket.close(1001, 'server shutting down');
     }
     this.clients.clear();
-    await new Promise<void>((resolve) => {
-      if (!this.http) return resolve();
-      this.http.close(() => resolve());
-      // 已建立的 keep-alive 连接会拖住 close，直接强制
-      this.http.closeAllConnections?.();
-    });
+    await Promise.all(
+      this.servers.map(
+        (server) =>
+          new Promise<void>((resolve) => {
+            server.close(() => resolve());
+            // 已建立的 keep-alive 连接会拖住 close，直接强制
+            server.closeAllConnections?.();
+          }),
+      ),
+    );
+    this.servers = [];
   }
 
   listDocuments(): BridgeConnection[] {
@@ -197,12 +218,14 @@ export class Hub {
 
   // ------------------------------------------------------------ 内部
 
-  private listen(port: number): Promise<Server> {
-    return new Promise((resolve, reject) => {
+  /** 绑定失败返回 null（端口占用、协议栈不可用等），由调用方决定换端口还是跳过。 */
+  private tryListen(port: number, host: string): Promise<Server | null> {
+    return new Promise((resolve) => {
       const server = createServer((req, res) => this.onHttp(req, res));
-      const onError = (err: Error) => {
+      const onError = (err: NodeJS.ErrnoException) => {
         server.removeListener('listening', onListening);
-        reject(err);
+        log.debug(`绑定 ${host}:${port} 失败（${err.code ?? err.message}）`);
+        resolve(null);
       };
       const onListening = () => {
         server.removeListener('error', onError);
@@ -210,7 +233,18 @@ export class Hub {
       };
       server.once('error', onError);
       server.once('listening', onListening);
-      server.listen(port, HOST);
+      server.listen(port, host);
+    });
+  }
+
+  private onUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void {
+    const path = (req.url ?? '').split('?')[0];
+    if (path !== WS_PATH || !this.wss) {
+      socket.destroy();
+      return;
+    }
+    this.wss.handleUpgrade(req, socket, head, (ws) => {
+      this.wss!.emit('connection', ws, req);
     });
   }
 

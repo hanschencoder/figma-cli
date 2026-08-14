@@ -147,13 +147,17 @@ node.boundVariables.fills[0].id
 
 5. **在同端口挂一个 HTTP `/health`。** 插件先 HTTP 探活再建 WS，比直接连 WS 试错快得多，端口扫描才不会卡住。
 
-6. **建议用 Figma 桌面版。** 从 https 页面连 `ws://localhost` 依赖"localhost 属于 potentially trustworthy origin"这条豁免 —— Chrome 支持，Safari 不保证。桌面版是 Electron，行为稳定。
+6. **`allowedDomains` 里不能写 IP 字面量。** `http://127.0.0.1` 会被 Figma 直接判为 `must be a valid URL`，插件加载失败。只能写 `localhost`，而且必须带端口。
 
-7. **localhost WebSocket 不是安全边界。** 任何本地网页都能连上读你的设计稿。因此加配对 token：server 启动时生成并写入 `~/.figma-mcp/token`，插件面板粘贴一次后存入 `figma.clientStorage`。
+7. **写了 `localhost` 就必须双栈监听。** `localhost` 在不同环境下解析成 `::1` 或 `127.0.0.1`，server 只绑一个的话会出现「server 明明在跑、`/health` 手动 curl 也通、插件就是连不上」。所以 server 在同一端口上同时绑 `127.0.0.1` 和 `::1`，共用一个 `WebSocketServer`（`noServer` 模式 + 各自转交 upgrade）。
 
-8. **大文件遍历会卡住 Figma 主线程。** 用 `findAllWithCriteria`（原生加速）而不是递归 `findAll`，配合 depth 限制。
+8. **建议用 Figma 桌面版。** 从 https 页面连 `ws://localhost` 依赖"localhost 属于 potentially trustworthy origin"这条豁免 —— Chrome 支持，Safari 不保证。桌面版是 Electron，行为稳定。
 
-9. **（v2 写操作预警）改文本前必须 `figma.loadFontAsync`**，漏了直接报错；批量操作要分批 yield，否则 Figma 主线程冻结。
+9. **localhost WebSocket 不是安全边界。** 任何本地网页都能连上读你的设计稿。因此加配对 token：server 启动时生成并写入 `~/.figma-mcp/token`，插件面板粘贴一次后存入 `figma.clientStorage`。
+
+10. **大文件遍历会卡住 Figma 主线程。** 用 `findAllWithCriteria`（原生加速）而不是递归 `findAll`，配合 depth 限制。
+
+11. **（v2 写操作预警）改文本前必须 `figma.loadFontAsync`**，漏了直接报错；批量操作要分批 yield，否则 Figma 主线程冻结。
 
 ---
 

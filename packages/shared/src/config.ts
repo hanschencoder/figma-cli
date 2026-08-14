@@ -13,7 +13,21 @@ export const PORTS: readonly number[] = Array.from(
   (_, i) => PORT_RANGE_START + i,
 );
 
-export const HOST = '127.0.0.1';
+/**
+ * 插件侧连接用的 host。
+ *
+ * 只能是 localhost —— Figma 校验 manifest 的 allowedDomains 时不接受 IP
+ * 字面量（`http://127.0.0.1` 会报 "must be a valid URL"）。
+ */
+export const CLIENT_HOST = 'localhost';
+
+/**
+ * server 绑定的回环地址，两个都绑。
+ *
+ * localhost 在不同环境下可能解析成 ::1 或 127.0.0.1，只绑一个就会出现
+ * "server 明明在跑但插件连不上" 这种查半天的问题。IPv6 那个绑不上不算失败。
+ */
+export const BIND_HOSTS = ['127.0.0.1', '::1'] as const;
 
 /** 插件先打 HTTP /health 探活，再建 WS —— 比直接连 WS 试错快得多。 */
 export const HEALTH_PATH = '/health';

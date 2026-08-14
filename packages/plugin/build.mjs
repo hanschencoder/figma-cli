@@ -61,18 +61,15 @@ async function inlineUi(result) {
  * 症状是 WebSocket 静默失败 —— 最难查的那类问题。所以由构建生成，
  * 产物照常提交进仓库（Figma 需要一个静态文件来 Import）。
  *
- * host 同时列出 127.0.0.1 和 localhost：server 绑的是 127.0.0.1，
- * 插件也连 127.0.0.1，避开 localhost 在 IPv6 环境下解析成 ::1 的坑。
+ * 只写 localhost 且必须带端口：Figma 校验 allowedDomains 时不接受 IP
+ * 字面量（`http://127.0.0.1` 报 "must be a valid URL"）。localhost 可能
+ * 解析到 IPv4 或 IPv6，server 两个回环地址都绑，见 config.ts 的 BIND_HOSTS。
  */
 async function generateManifest() {
-  const hosts = ['127.0.0.1', 'localhost'];
   const domains = [];
-  for (const host of hosts) {
-    for (const scheme of ['http', 'ws']) {
-      domains.push(`${scheme}://${host}`);
-      for (let port = PORT_RANGE_START; port <= PORT_RANGE_END; port++) {
-        domains.push(`${scheme}://${host}:${port}`);
-      }
+  for (const scheme of ['http', 'ws']) {
+    for (let port = PORT_RANGE_START; port <= PORT_RANGE_END; port++) {
+      domains.push(`${scheme}://localhost:${port}`);
     }
   }
 
@@ -80,7 +77,7 @@ async function generateManifest() {
   template.networkAccess.allowedDomains = domains;
   template.networkAccess.devAllowedDomains = domains;
   template.networkAccess.reasoning =
-    `Connects to a local MCP server over WebSocket on 127.0.0.1 ` +
+    `Connects to a local MCP server over WebSocket on localhost ` +
     `(port range ${PORT_RANGE_START}-${PORT_RANGE_END} for fallback when a port is occupied). ` +
     `No data leaves the machine.`;
 
