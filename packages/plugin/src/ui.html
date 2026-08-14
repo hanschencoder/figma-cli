@@ -1,0 +1,135 @@
+<!-- 这个文件是模板：构建时底部的占位符会被替换成打包后的 ui.js。
+     Figma 只加载 manifest.ui 指向的单个文件，所以脚本必须内联。 -->
+<style>
+  :root {
+    --bg: var(--figma-color-bg, #fff);
+    --fg: var(--figma-color-text, #1e1e1e);
+    --dim: var(--figma-color-text-secondary, #7a7a7a);
+    --border: var(--figma-color-border, #e6e6e6);
+    --btn-bg: var(--figma-color-bg-secondary, #f5f5f5);
+    --ok: #14ae5c;
+    --warn: #f0a30a;
+    --err: #f24822;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    font: 11px/1.5 Inter, -apple-system, system-ui, sans-serif;
+    color: var(--fg);
+    background: var(--bg);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .strip {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--dim);
+    flex: none;
+  }
+  .dot.ok { background: var(--ok); }
+  .dot.warn { background: var(--warn); }
+  .dot.err { background: var(--err); }
+
+  .status { font-weight: 600; letter-spacing: 0.04em; }
+  .spacer { flex: 1; }
+
+  button {
+    font: inherit;
+    color: var(--fg);
+    background: var(--btn-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 3px 8px;
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--dim); }
+
+  .body { padding: 10px 12px; }
+
+  .row {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    color: var(--dim);
+    padding: 1px 0;
+  }
+  .row b { color: var(--fg); font-weight: 500; text-align: right; word-break: break-all; }
+
+  .auth {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+  }
+  .auth.hidden { display: none; }
+  .auth p { margin: 0 0 6px; color: var(--dim); }
+  .auth code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: var(--btn-bg);
+    padding: 1px 4px;
+    border-radius: 3px;
+  }
+  .auth-form { display: flex; gap: 6px; }
+  input {
+    flex: 1;
+    min-width: 0;
+    font: inherit;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--fg);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 3px 6px;
+  }
+  input:focus { outline: 1px solid var(--ok); border-color: var(--ok); }
+
+  .log {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+    max-height: 96px;
+    overflow-y: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10px;
+    color: var(--dim);
+  }
+  .log div { white-space: pre-wrap; word-break: break-all; }
+  .log div.err { color: var(--err); }
+  .log.hidden { display: none; }
+</style>
+
+<div class="strip">
+  <span class="dot" id="dot"></span>
+  <span class="status" id="status">启动中</span>
+  <span class="spacer"></span>
+  <button id="logBtn">日志</button>
+  <button id="reconnectBtn">重连</button>
+</div>
+
+<div class="body">
+  <div class="row"><span>文件</span><b id="file">—</b></div>
+  <div class="row"><span>页面</span><b id="page">—</b></div>
+  <div class="row"><span>Server</span><b id="server">—</b></div>
+
+  <div class="auth hidden" id="auth">
+    <p>需要配对 token，内容在 <code>~/.figma-mcp/token</code></p>
+    <div class="auth-form">
+      <input id="tokenInput" placeholder="粘贴 token" spellcheck="false" />
+      <button id="tokenSave">保存</button>
+    </div>
+  </div>
+
+  <div class="log hidden" id="log"></div>
+</div>
+
+<script>__UI_SCRIPT__</script>
