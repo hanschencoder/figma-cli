@@ -11,9 +11,6 @@
 
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { WebSocket } from 'ws';
 
@@ -206,7 +203,7 @@ class StdioClient {
 
 // ---------------------------------------------------------------- 假插件
 
-function connectFakePlugin(port, token) {
+function connectFakePlugin(port) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`ws://localhost:${port}/bridge`);
     const timer = setTimeout(() => reject(new Error('插件握手超时')), 8000);
@@ -215,7 +212,6 @@ function connectFakePlugin(port, token) {
       ws.send(JSON.stringify({
         type: 'hello',
         protocol: PROTOCOL,
-        token,
         doc: { docId: DOC_ID, fileKey: 'smokeFileKey', name: 'Smoke Test File', editorType: 'figma' },
         pluginVersion: 'smoke',
       }));
@@ -305,8 +301,7 @@ async function main() {
     });
     check('未知 docId 报 NOT_FOUND', extractText(missing).includes('NOT_FOUND'));
 
-    const token = readFileSync(join(homedir(), '.figma-mcp', 'token'), 'utf8').trim();
-    const ws = await connectFakePlugin(PORT, token);
+    const ws = await connectFakePlugin(PORT);
     await delay(150);
     check('假插件握手成功', ws.readyState === WebSocket.OPEN);
 

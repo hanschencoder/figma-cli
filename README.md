@@ -74,14 +74,7 @@ figma --help
 figma status
 ```
 
-### 4. 配对
-
-daemon 首次启动会生成 `~/.figma-mcp/token`。把里面的内容粘贴到插件面板的输入框，点保存。
-之后 token 存在 `figma.clientStorage` 里，不用再输。
-
-本机独占调试时可以用 `FIGMA_MCP_NO_AUTH=1` 跳过。
-
-### 5. 用起来
+### 4. 用起来
 
 ```bash
 figma ctx                      # 看用户选中了什么
@@ -108,7 +101,6 @@ claude mcp add figma -s user -- node "$PWD/packages/server/dist/index.js"
 | 变量 | 说明 |
 |---|---|
 | `FIGMA_MCP_PORT` | 固定端口（CLI 也只认这个端口，用于测试隔离） |
-| `FIGMA_MCP_NO_AUTH` | `1` 关闭配对校验 |
 | `FIGMA_MCP_LOG_LEVEL` | `debug` / `info` / `warn` / `error`，日志走 stderr |
 
 ### 排查
@@ -277,7 +269,7 @@ node.boundVariables.fills[0].id
 
 8. **建议用 Figma 桌面版。** 从 https 页面连 `ws://localhost` 依赖"localhost 属于 potentially trustworthy origin"这条豁免 —— Chrome 支持，Safari 不保证。桌面版是 Electron，行为稳定。
 
-9. **localhost WebSocket 不是安全边界。** 任何本地网页都能连上读你的设计稿。因此加配对 token：server 启动时生成并写入 `~/.figma-mcp/token`，插件面板粘贴一次后存入 `figma.clientStorage`。
+9. **不做鉴权，靠只读兜底。** localhost WebSocket 严格说不是安全边界 —— 本机上的任何进程都能连上端口读设计稿。早期版本加过配对 token，但它明文躺在 `~/.figma-mcp/token`，能连端口的进程同样能读这个文件，等于没加。v1 全部接口只读、不出网，风险面就是「本机已被攻破时能多读一份设计稿」，不值得为它付配对成本。**v2 引入写操作时必须重新评估**，那时候的风险是别人能改你的稿子。
 
 10. **大文件遍历会卡住 Figma 主线程。** 用 `findAllWithCriteria`（原生加速）而不是递归 `findAll`，配合 depth 限制。
 

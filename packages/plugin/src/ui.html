@@ -66,33 +66,6 @@
   }
   .row b { color: var(--fg); font-weight: 500; text-align: right; word-break: break-all; }
 
-  .auth {
-    margin-top: 10px;
-    padding-top: 10px;
-    border-top: 1px solid var(--border);
-  }
-  .auth.hidden { display: none; }
-  .auth p { margin: 0 0 6px; color: var(--dim); }
-  .auth code {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    background: var(--btn-bg);
-    padding: 1px 4px;
-    border-radius: 3px;
-  }
-  .auth-form { display: flex; gap: 6px; }
-  input {
-    flex: 1;
-    min-width: 0;
-    font: inherit;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    color: var(--fg);
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 3px 6px;
-  }
-  input:focus { outline: 1px solid var(--ok); border-color: var(--ok); }
-
   .log {
     margin-top: 10px;
     padding-top: 8px;
@@ -120,14 +93,6 @@
   <div class="row"><span>文件</span><b id="file">—</b></div>
   <div class="row"><span>页面</span><b id="page">—</b></div>
   <div class="row"><span>Server</span><b id="server">—</b></div>
-
-  <div class="auth hidden" id="auth">
-    <p>需要配对 token，内容在 <code>~/.figma-mcp/token</code></p>
-    <div class="auth-form">
-      <input id="tokenInput" placeholder="粘贴 token" spellcheck="false" />
-      <button id="tokenSave">保存</button>
-    </div>
-  </div>
 
   <div class="log hidden" id="log"></div>
 </div>

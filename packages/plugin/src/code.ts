@@ -14,8 +14,6 @@ import { HandlerError, dispatch, documentIdentity } from './handlers.js';
 import { collectNode } from './collect/node.js';
 import { ResolveCache } from './collect/common.js';
 
-const TOKEN_KEY = 'figma-mcp-pairing-token';
-
 figma.showUI(__html__, { width: 300, height: 240, themeColors: true });
 
 function send(msg: SandboxToUi): void {
@@ -40,16 +38,6 @@ figma.ui.onmessage = async (msg: UiToSandbox) => {
   switch (msg.kind) {
     case 'ui-ready':
       sendDoc();
-      return;
-
-    case 'get-token': {
-      const token = (await figma.clientStorage.getAsync(TOKEN_KEY)) as string | undefined;
-      send({ kind: 'token', token: token ?? null });
-      return;
-    }
-
-    case 'set-token':
-      await figma.clientStorage.setAsync(TOKEN_KEY, msg.token);
       return;
 
     case 'req': {

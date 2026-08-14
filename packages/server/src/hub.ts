@@ -36,7 +36,6 @@ import {
   type ResultOf,
   type ServerToPluginMessage,
 } from '@figma-mcp/shared';
-import type { Auth } from './auth.js';
 import { log } from './logger.js';
 
 export const SERVER_VERSION = '0.1.0';
@@ -99,8 +98,6 @@ export class Hub {
   /** docId → client。同一文档重连时替换旧连接。 */
   private clients = new Map<string, Client>();
   private _port = 0;
-
-  constructor(private readonly auth: Auth) {}
 
   get port(): number {
     return this._port;
@@ -295,7 +292,6 @@ export class Hub {
           protocol: PROTOCOL_VERSION,
           port: this._port,
           pid: process.pid,
-          authRequired: this.auth.enabled,
           documents: this.listDocuments().map((d) => ({
             docId: d.doc.docId,
             name: d.doc.name,
@@ -346,11 +342,6 @@ export class Hub {
           );
           return;
         }
-        if (!this.auth.verify(msg.token)) {
-          closeWith(`配对 token 不正确。请从 ${this.auth.tokenPath} 复制 token 粘贴到插件面板`);
-          return;
-        }
-
         client = {
           connId,
           socket,

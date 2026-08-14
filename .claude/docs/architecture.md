@@ -55,7 +55,6 @@ cli.ts 解析参数(zod) → POST /call → daemon.ts 路由 → registry 的 ru
 | `server/src/hub.ts` | WS + HTTP 服务、端口绑定、请求关联、分片重组、心跳 |
 | `server/src/daemon.ts` | 常驻进程装配：Hub + tools + `/call` `/shutdown` 路由 |
 | `server/src/router.ts` | 多文档路由，拒绝静默猜测目标 |
-| `server/src/auth.ts` | 配对 token 生成与校验 |
 | `plugin/src/ui.ts` | 端口扫描、重连 watchdog、请求来源路由、base64 分片 |
-| `plugin/src/code.ts` | 沙箱侧消息中转、clientStorage、事件转发 |
+| `plugin/src/code.ts` | 沙箱侧消息中转、事件转发 |
 | `plugin/src/handlers.ts` | 各 method 的实现入口 |

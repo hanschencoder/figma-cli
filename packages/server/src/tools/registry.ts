@@ -16,7 +16,7 @@ import {
   IMAGE_REQUEST_TIMEOUT_MS,
   MAX_IMAGE_DIMENSION,
   Method,
-  TOKEN_DIR,
+  STATE_DIR,
 } from '@figma-mcp/shared';
 import { BridgeError, type Hub } from '../hub.js';
 import { log } from '../logger.js';
@@ -460,7 +460,7 @@ export function createTools(ctx: ToolContext): ToolDef[] {
  */
 function saveExport(nodeId: string, mime: string, data: Buffer): string | undefined {
   try {
-    const dir = join(homedir(), TOKEN_DIR, 'exports');
+    const dir = join(homedir(), STATE_DIR, 'exports');
     mkdirSync(dir, { recursive: true });
     const ext = mime === 'image/png' ? 'png' : 'jpg';
     const safeId = nodeId.replace(/[^\w-]/g, '_');

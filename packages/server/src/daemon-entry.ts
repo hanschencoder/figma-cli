@@ -9,9 +9,6 @@ import { log } from './logger.js';
 const daemon = await startDaemon();
 
 log.info(`figma daemon 已就绪（端口 ${daemon.port}，pid ${process.pid}）`);
-if (daemon.auth.enabled) {
-  log.info(`配对 token: ${daemon.auth.token}（也在 ${daemon.auth.tokenPath}）`);
-}
 
 const shutdown = (signal: string) => {
   log.info(`收到 ${signal}，退出中`);

@@ -24,8 +24,6 @@ import type {
 export interface HelloMessage {
   type: 'hello';
   protocol: number;
-  /** 配对 token；server 侧启用鉴权时必填 */
-  token?: string;
   doc: DocumentIdentity;
   pluginVersion: string;
 }
@@ -33,7 +31,7 @@ export interface HelloMessage {
 export interface HelloAckMessage {
   type: 'hello-ack';
   ok: boolean;
-  /** ok=false 时说明原因（协议版本不符 / token 错误） */
+  /** ok=false 时说明原因（协议版本不符） */
   error?: string;
   serverVersion: string;
   protocol: number;

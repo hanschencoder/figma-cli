@@ -41,8 +41,6 @@ const requestOrigin = new Map<string, Conn>();
 
 let doc: DocumentIdentity | undefined;
 let pageName = '—';
-let token: string | null = null;
-let authFailed = false;
 let scanning = false;
 
 // ------------------------------------------------------------------ DOM
@@ -56,9 +54,6 @@ const els = {
   file: $('file'),
   page: $('page'),
   server: $('server'),
-  auth: $('auth'),
-  tokenInput: $<HTMLInputElement>('tokenInput'),
-  tokenSave: $('tokenSave'),
   log: $('log'),
   logBtn: $('logBtn'),
   reconnectBtn: $('reconnectBtn'),
@@ -76,10 +71,7 @@ function logLine(text: string, isError = false): void {
 function render(): void {
   const ready = [...conns.values()].filter((c) => c.ready);
 
-  if (authFailed) {
-    els.dot.className = 'dot err';
-    els.status.textContent = 'TOKEN 无效';
-  } else if (ready.length > 0) {
+  if (ready.length > 0) {
     els.dot.className = 'dot ok';
     els.status.textContent = '已连接';
   } else if (conns.size > 0) {
@@ -94,32 +86,16 @@ function render(): void {
   els.page.textContent = pageName;
   els.server.textContent =
     ready.length > 0 ? ready.map((c) => `:${c.port}`).join(' ') : '未连接';
-  els.auth.classList.toggle('hidden', !authFailed);
 }
 
 els.logBtn.onclick = () => els.log.classList.toggle('hidden');
 els.reconnectBtn.onclick = () => {
   logLine('手动重连');
-  authFailed = false;
   for (const conn of conns.values()) conn.ws.close();
   conns.clear();
   render();
   void scan();
 };
-els.tokenSave.onclick = () => {
-  const value = els.tokenInput.value.trim();
-  if (!value) return;
-  token = value;
-  authFailed = false;
-  post({ kind: 'set-token', token: value });
-  els.tokenInput.value = '';
-  logLine('token 已保存，重新连接');
-  for (const conn of conns.values()) conn.ws.close();
-  conns.clear();
-  render();
-  void scan();
-};
-
 // ------------------------------------------------------- 沙箱通信
 
 function post(msg: UiToSandbox): void {
@@ -137,10 +113,6 @@ window.onmessage = (event: MessageEvent) => {
       render();
       // 文档身份是握手的前提，拿到后才开始扫描
       void scan();
-      return;
-
-    case 'token':
-      token = msg.token;
       return;
 
     case 'res': {
@@ -232,7 +204,7 @@ async function probe(port: number): Promise<ProbeResult> {
 let lastScanReport = '';
 
 async function scan(): Promise<void> {
-  if (scanning || !doc || authFailed) return;
+  if (scanning || !doc) return;
   scanning = true;
   try {
     const results = await Promise.all(
@@ -285,7 +257,6 @@ function connect(port: number): void {
     send(conn, {
       type: 'hello',
       protocol: PROTOCOL_VERSION,
-      token: token ?? undefined,
       doc: doc!,
       pluginVersion: PLUGIN_VERSION,
     });
@@ -330,7 +301,6 @@ function connect(port: number): void {
 function onHelloAck(conn: Conn, msg: HelloAckMessage): void {
   if (!msg.ok) {
     logLine(`:${conn.port} 握手失败 — ${msg.error ?? '未知原因'}`, true);
-    if (msg.error?.includes('token')) authFailed = true;
     conn.ws.close();
     render();
     return;
@@ -363,7 +333,6 @@ function splitChunks(base64: string): string[] {
 // ------------------------------------------------------- 启动
 
 post({ kind: 'ui-ready' });
-post({ kind: 'get-token' });
 render();
 // 插件常常先于 server 打开，watchdog 持续探测，不需要用户手动重启插件
 setInterval(() => void scan(), SCAN_INTERVAL_MS);

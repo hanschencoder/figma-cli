@@ -22,12 +22,6 @@ import type { ToolDef } from './tools/registry.js';
 async function main(): Promise<void> {
   const daemon = await startDaemon();
 
-  if (daemon.auth.enabled) {
-    log.info(`配对 token: ${daemon.auth.token}（也在 ${daemon.auth.tokenPath}）`);
-  } else {
-    log.warn('已通过 FIGMA_MCP_NO_AUTH=1 关闭配对校验');
-  }
-
   const server = new McpServer(
     { name: 'figma-mcp', version: SERVER_VERSION },
     {

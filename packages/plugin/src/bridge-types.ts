@@ -10,8 +10,6 @@ import type { DocumentIdentity, Method, ProtocolError } from '@figma-mcp/shared'
 export type SandboxToUi =
   /** 握手所需的文档身份，插件启动时和文档变化时发送 */
   | { kind: 'doc'; doc: DocumentIdentity; page: { id: string; name: string } }
-  /** clientStorage 里读出的配对 token，null 表示没存过 */
-  | { kind: 'token'; token: string | null }
   | {
       kind: 'res';
       id: string;
@@ -30,7 +28,5 @@ export type SandboxToUi =
 
 export type UiToSandbox =
   | { kind: 'req'; id: string; method: Method; params: unknown }
-  | { kind: 'get-token' }
-  | { kind: 'set-token'; token: string }
   /** UI 加载完成，可以接收 doc 了 */
   | { kind: 'ui-ready' };

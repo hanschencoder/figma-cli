@@ -17,7 +17,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
-import { CLIENT_HOST, HEALTH_PATH, PORTS, TOKEN_DIR } from '@figma-mcp/shared';
+import { CLIENT_HOST, HEALTH_PATH, PORTS, STATE_DIR } from '@figma-mcp/shared';
 import { CALL_PATH, SHUTDOWN_PATH } from './daemon.js';
 import { createTools, type ToolDef } from './tools/registry.js';
 
@@ -247,14 +247,6 @@ interface Endpoint {
   pid?: number;
 }
 
-function token(): string {
-  try {
-    return readFileSync(join(homedir(), TOKEN_DIR, 'token'), 'utf8').trim();
-  } catch {
-    return '';
-  }
-}
-
 async function probe(port: number): Promise<boolean> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
@@ -282,7 +274,7 @@ async function findDaemon(): Promise<Endpoint | undefined> {
 
   // 先试 daemon.json 记录的端口，命中就省掉扫描
   try {
-    const raw = readFileSync(join(homedir(), TOKEN_DIR, 'daemon.json'), 'utf8').trim();
+    const raw = readFileSync(join(homedir(), STATE_DIR, 'daemon.json'), 'utf8').trim();
     if (raw) {
       const hint = JSON.parse(raw) as Endpoint;
       if (hint.port && (await probe(hint.port))) return hint;
@@ -307,7 +299,7 @@ async function ensureDaemon(): Promise<Endpoint> {
     throw new Error(`找不到 daemon 入口 ${entry}，先执行 npm run build`);
   }
 
-  const logDir = join(homedir(), TOKEN_DIR);
+  const logDir = join(homedir(), STATE_DIR);
   mkdirSync(logDir, { recursive: true });
   const logFd = openSync(join(logDir, 'daemon.log'), 'a');
 
@@ -365,10 +357,7 @@ async function post(
 ): Promise<{ status: number; json: Record<string, unknown> }> {
   const res = await fetch(`http://${CLIENT_HOST}:${endpoint.port}${path}`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token()}`,
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
   const text = await res.text();
@@ -393,13 +382,11 @@ async function cmdStatus(): Promise<number> {
   const health = (await res.json()) as {
     version: string;
     pid: number;
-    authRequired: boolean;
     documents: { docId: string; name: string }[];
   };
   console.log(
     [
-      `daemon 运行中  端口 ${found.port}  pid ${health.pid}  v${health.version}` +
-        `  鉴权 ${health.authRequired ? '开' : '关'}`,
+      `daemon 运行中  端口 ${found.port}  pid ${health.pid}  v${health.version}`,
       health.documents.length
         ? `已连接文档:\n${health.documents.map((d) => `  ${d.name}  ${d.docId}`).join('\n')}`
         : '没有 Figma 插件连接 —— 在 Figma 里运行 Figma MCP Bridge 插件',

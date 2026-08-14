@@ -46,6 +46,5 @@ export const CHUNK_SIZE = 256 * 1024;
 /** 图像长边上限。Claude 会把图缩到约 1.15M 像素，传更大纯粹浪费 token 和时间。 */
 export const MAX_IMAGE_DIMENSION = 1500;
 
-/** 配对 token 存放位置（相对 home 目录）。 */
-export const TOKEN_DIR = '.figma-mcp';
-export const TOKEN_FILE = 'token';
+/** 运行时状态目录（相对 home 目录）：daemon.json、daemon.log、导出的图片。 */
+export const STATE_DIR = '.figma-mcp';

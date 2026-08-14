@@ -12,8 +12,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { ServerResponse } from 'node:http';
-import { TOKEN_DIR } from '@figma-mcp/shared';
-import { loadOrCreateAuth, type Auth } from './auth.js';
+import { STATE_DIR } from '@figma-mcp/shared';
 import { Hub, SERVER_VERSION } from './hub.js';
 import { log } from './logger.js';
 import { DocumentRouter } from './router.js';
@@ -24,25 +23,19 @@ export const SHUTDOWN_PATH = '/shutdown';
 
 export interface Daemon {
   hub: Hub;
-  auth: Auth;
   tools: ToolDef[];
   port: number;
   stop(): Promise<void>;
 }
 
 export async function startDaemon(): Promise<Daemon> {
-  const auth = loadOrCreateAuth();
-  const hub = new Hub(auth);
+  const hub = new Hub();
   const port = await hub.start();
   const router = new DocumentRouter(hub);
   const tools = createTools({ hub, router });
   const byName = new Map(tools.flatMap((t) => [[t.name, t] as const, [t.cli, t] as const]));
 
-  hub.addRoute('POST', CALL_PATH, async (req, res, body) => {
-    if (!authorize(req.headers.authorization, auth)) {
-      return json(res, 401, { ok: false, error: '配对 token 不正确' });
-    }
-
+  hub.addRoute('POST', CALL_PATH, async (_req, res, body) => {
     let payload: { tool?: string; args?: Record<string, unknown> };
     try {
       payload = JSON.parse(body || '{}');
@@ -67,10 +60,7 @@ export async function startDaemon(): Promise<Daemon> {
     });
   });
 
-  hub.addRoute('POST', SHUTDOWN_PATH, async (req, res) => {
-    if (!authorize(req.headers.authorization, auth)) {
-      return json(res, 401, { ok: false, error: '配对 token 不正确' });
-    }
+  hub.addRoute('POST', SHUTDOWN_PATH, async (_req, res) => {
     json(res, 200, { ok: true });
     log.info('收到关闭请求');
     // 先把响应发出去再退出
@@ -84,13 +74,7 @@ export async function startDaemon(): Promise<Daemon> {
     clearAdvertisement();
   };
 
-  return { hub, auth, tools, port, stop };
-}
-
-function authorize(header: string | undefined, auth: Auth): boolean {
-  if (!auth.enabled) return true;
-  const supplied = header?.replace(/^Bearer\s+/i, '');
-  return auth.verify(supplied);
+  return { hub, tools, port, stop };
 }
 
 function json(res: ServerResponse, status: number, body: unknown): void {
@@ -98,7 +82,7 @@ function json(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
-const advertisePath = () => join(homedir(), TOKEN_DIR, 'daemon.json');
+const advertisePath = () => join(homedir(), STATE_DIR, 'daemon.json');
 
 /**
  * 把端口和 pid 落盘。CLI 优先读它，读不到再扫端口段 ——
@@ -106,7 +90,7 @@ const advertisePath = () => join(homedir(), TOKEN_DIR, 'daemon.json');
  */
 function advertise(port: number): void {
   try {
-    mkdirSync(join(homedir(), TOKEN_DIR), { recursive: true });
+    mkdirSync(join(homedir(), STATE_DIR), { recursive: true });
     writeFileSync(
       advertisePath(),
       `${JSON.stringify({
