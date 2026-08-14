@@ -31,6 +31,10 @@ npm run setup          # = bash scripts/install.sh，安装/更新 CLI 与 skill
 **日志一律 stderr。** MCP 前端用 stdio，stdout 是 JSON-RPC 通道，写一个字节日志就让
 客户端解析失败。用 `logger.ts` 的 `log.*`，不要 `console.log`。
 
+**stdout 只有 YAML，不许掺一行别的。** 进度提示（如「daemon 已启动」）走 stderr，而且写成
+`# 注释` 形式；「已截断」「找不到这些 id」这类附注用 `note()` 追加成 YAML 注释行 —— 这样
+`figma tree 2>&1 | yq` 也不会炸。help / usage 报错是例外，那是给人看的。
+
 **输出一律 YAML。** 序列化在 `server/src/yaml.ts`，自带一个最小 emitter（不引第三方）。
 引号规则保守：含 `:` `#` `@` 等保留字符就加引号 —— 节点 id `12:34` 不加引号会被 YAML 1.1
 解析器读成六十进制数字 754。省 token 靠「无意义字段不写」和「短结构走 flow」，不靠自造格式。

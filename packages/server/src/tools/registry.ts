@@ -125,6 +125,17 @@ function ok(text: string): ToolResult {
   return { text };
 }
 
+/**
+ * 附注写成 YAML 注释。
+ *
+ * 「已截断」「找不到这些 id」这类信息不属于数据本身，但模型必须看到。
+ * 包成注释：输出整体仍是一份能解析的 YAML，注释行照样在模型眼里。
+ * 比把整棵树套进 `nodes:` 再加个兄弟字段便宜 —— 那要给每一行多加一级缩进。
+ */
+function note(text: string): string {
+  return `\n# ${text}`;
+}
+
 function failure(text: string): ToolResult {
   return { text, isError: true };
 }
@@ -280,10 +291,15 @@ export function createTools(ctx: ToolContext): ToolDef[] {
             maxNodes: args.maxNodes as number | undefined,
           });
           const body = serializeNodes(result.roots, { detail: 'compact' });
-          const note = result.truncated
-            ? `\n\n（已达节点上限 ${result.nodeCount}，输出被截断。缩小 depth 或对具体子节点单独取树）`
-            : '';
-          return ok(body + note);
+          return ok(
+            result.truncated
+              ? body +
+                  note(
+                    `已达节点上限 ${result.nodeCount}，输出被截断。` +
+                      '缩小 depth，或对具体子节点单独取树',
+                  )
+              : body,
+          );
         }),
     },
 
@@ -344,10 +360,11 @@ export function createTools(ctx: ToolContext): ToolDef[] {
             withChildren: args.withChildren as boolean | undefined,
           });
           const body = serializeNodes(result.nodes, { detail: 'full' });
-          const missing = result.missing?.length
-            ? `\n\n找不到的 id: ${result.missing.join(', ')}`
-            : '';
-          return ok((body || '没有可显示的节点。') + missing);
+          return ok(
+            result.missing?.length
+              ? body + note(`找不到这些 id：${result.missing.join(', ')}`)
+              : body,
+          );
         }),
     },
 
@@ -600,8 +617,8 @@ export function createTools(ctx: ToolContext): ToolDef[] {
             expand: args.expand as boolean | undefined,
             limit: args.limit as number | undefined,
           });
-          const note = result.truncated ? '\n\n（变量数量超过上限，已截断）' : '';
-          return ok(serializeVariables(result.collections) + note);
+          const body = serializeVariables(result.collections);
+          return ok(result.truncated ? body + note('变量数量超过上限，已截断') : body);
         }),
     },
 
@@ -622,8 +639,8 @@ export function createTools(ctx: ToolContext): ToolDef[] {
             type: args.type as 'PAINT' | 'TEXT' | 'EFFECT' | 'GRID' | undefined,
             limit: args.limit as number | undefined,
           });
-          const note = result.truncated ? '\n\n（样式数量超过上限，已截断）' : '';
-          return ok(serializeStyles(result.styles) + note);
+          const body = serializeStyles(result.styles);
+          return ok(result.truncated ? body + note('样式数量超过上限，已截断') : body);
         }),
     },
 

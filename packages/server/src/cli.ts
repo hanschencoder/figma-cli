@@ -356,7 +356,8 @@ async function waitForPlugin(endpoint: Endpoint): Promise<void> {
     if (Date.now() > deadline) return;
     if (!notified) {
       notified = true;
-      process.stderr.write('daemon 已启动，等待 Figma 插件接入…\n');
+      // 走 stderr，而且写成 YAML 注释 —— 就算有人 2>&1 合流，输出照样能解析
+      process.stderr.write('# daemon 已启动，等待 Figma 插件接入…\n');
     }
     await new Promise((r) => setTimeout(r, 400));
   }
@@ -485,7 +486,12 @@ async function main(): Promise<number> {
   const { status, json } = await post(endpoint, CALL_PATH, { tool: tool.name, args });
 
   if (status !== 200) {
-    console.error(String(json.error ?? `HTTP ${status}`));
+    console.error(
+      yamlOf([
+        ['error', `HTTP_${status}`],
+        ['message', String(json.error ?? '')],
+      ]),
+    );
     return 1;
   }
 
@@ -501,6 +507,11 @@ async function main(): Promise<number> {
 main()
   .then((code) => process.exit(code))
   .catch((err) => {
-    console.error(err instanceof Error ? err.message : String(err));
+    console.error(
+      yamlOf([
+        ['error', 'CLI'],
+        ['message', err instanceof Error ? err.message : String(err)],
+      ]),
+    );
     process.exit(1);
   });
