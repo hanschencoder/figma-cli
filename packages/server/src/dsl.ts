@@ -11,6 +11,7 @@
 import type {
   ComponentSummary,
   DocumentContext,
+  EffectInfo,
   NodeInfo,
   NodeMatch,
   PaintInfo,
@@ -273,7 +274,7 @@ function formatPaint(paint: PaintInfo, opts: DslOptions): string {
   }
 }
 
-function formatEffect(effect: { type: string; color?: string; offset?: [number, number]; radius?: number; spread?: number; token?: TokenRef }, opts: DslOptions): string {
+function formatEffect(effect: EffectInfo, opts: DslOptions): string {
   if (effect.token) return formatToken(effect.token, opts);
   const kind =
     effect.type === 'DROP_SHADOW'

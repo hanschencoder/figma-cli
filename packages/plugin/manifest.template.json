@@ -1,0 +1,17 @@
+{
+  "name": "Figma MCP Bridge",
+  "id": "figma-mcp-bridge-local",
+  "api": "1.0.0",
+  "main": "build/code.js",
+  "ui": "build/ui.html",
+  "editorType": ["figma", "dev"],
+  "capabilities": ["inspect"],
+  "enablePrivatePluginApi": true,
+  "permissions": ["teamlibrary"],
+  "documentAccess": "dynamic-page",
+  "networkAccess": {
+    "allowedDomains": "__DOMAINS__",
+    "reasoning": "__REASONING__",
+    "devAllowedDomains": "__DOMAINS__"
+  }
+}

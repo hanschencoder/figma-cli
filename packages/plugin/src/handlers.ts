@@ -147,6 +147,7 @@ async function nodeTree(params: NodeTreeParams): Promise<NodeTreeResult> {
 
   const out: NodeInfo[] = [];
   for (const root of roots) {
+    opts.budget.remaining--;
     out.push(await collectNode(root, cache, opts));
   }
 
@@ -175,7 +176,7 @@ async function nodeDetail(params: NodeDetailParams): Promise<NodeDetailResult> {
       missing.push(id);
       continue;
     }
-    nodes.push(await collectNode(node, cache, { ...opts, depth: opts.depth }));
+    nodes.push(await collectNode(node, cache, opts));
   }
 
   const result: NodeDetailResult = { nodes };

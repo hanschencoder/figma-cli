@@ -77,15 +77,18 @@ MCP Server (Node/TS)  ── 内嵌 WS Server + HTTP /health
 同样的信息，原始 JSON 大约是下面这种格式的 5–10 倍 token：
 
 ```
-Frame "ProductCard" #12:34  340x420  autoV gap=16 pad=20
-  fill=$surface/card  radius=$radius/lg  shadow=$elevation/1
-  ├ Rect "cover" #12:35  300x180  radius=$radius/md  fill=<image>
-  └ Frame "info" #12:36  autoV gap=8 grow=1
-    ├ Text "title" #12:37  "AirPods Pro"  style=$text/heading-sm  color=$color/text-primary
-    └ Text "price" #12:38  "¥1,899"       style=$text/body        color=$color/brand
+Frame "ProductCard" #12:34  340x420 autoV gap=16 pad=20 fill=$surface/card radius=12 effect=$elevation/1
+  Rect "cover" #12:35  300x180 fill=<image:fill> radius=8
+  Frame "info" #12:36  300x60 autoV gap=8 w=fill
+    Text "title" #12:37  300x24 "AirPods Pro" color=$color/text-primary font=@text/heading-sm
+    Text "price" #12:38  300x20 "¥1,899" color=$color/brand font=Inter Regular 14/20px
 ```
 
+记号约定：`$name` 是**变量**（variable），`@name` 是**样式**（style）。
+
 **核心规则：能还原成 token 引用的，绝不输出原始值。**
+出现 `$` 或 `@` 时，生成的代码必须引用对应 token，不要硬编码字面值 —— 这条规则同时写进了
+`get_node_tree` 的 tool 描述里，模型读到输出时就知道该怎么处理。
 
 ### 2. 插件侧裁剪，Server 侧格式化
 
@@ -126,7 +129,7 @@ node.boundVariables.fills[0].id
 
 - **必须分片**：几 MB 的 base64 单条 WS 消息不稳，协议里带 `chunkIndex/total`
 - **必须限尺寸**：默认 scale=1、长边上限 ~1500px，超出自动降采样。Claude 会把图片缩到约 1.15M 像素，传更大纯粹浪费 token 和时间
-- 同时落盘到临时目录并返回路径，方便肉眼调试
+- 同时落一份到 `~/.figma-mcp/exports/` 并返回路径，方便肉眼核对模型「看到」的是什么
 
 ---
 
@@ -154,7 +157,73 @@ node.boundVariables.fills[0].id
 
 ---
 
-## 六、目录结构
+## 六、快速开始
+
+### 1. 构建
+
+```bash
+npm install
+npm run build
+```
+
+`manifest.json` 由构建脚本从端口段常量生成 —— 不要手改，改了会和 `config.ts` 漂移。
+
+### 2. 在 Figma 里导入插件
+
+Figma **桌面版** → `Plugins` → `Development` → `Import plugin from manifest...`
+选择 `packages/plugin/manifest.json`。
+
+导入后在 `Plugins → Development → Figma MCP Bridge` 运行。插件面板会显示连接状态。
+
+> 改了插件代码只需重新 `npm run build:plugin` 并重开插件窗口；
+> **但改了 `manifest.json` 必须重新 Import** —— Figma 在应用级缓存插件文件。
+
+### 3. 配置 MCP 客户端
+
+Claude Code：
+
+```bash
+claude mcp add figma -- node /绝对路径/figma-mcp/packages/server/dist/index.js
+```
+
+或手写配置：
+
+```json
+{
+  "mcpServers": {
+    "figma": {
+      "command": "node",
+      "args": ["/绝对路径/figma-mcp/packages/server/dist/index.js"]
+    }
+  }
+}
+```
+
+### 4. 配对
+
+server 首次启动会生成 `~/.figma-mcp/token`。把里面的内容粘贴到插件面板的输入框，点保存。
+之后 token 存在 `figma.clientStorage` 里，不用再输。
+
+本机独占调试时可以用 `FIGMA_MCP_NO_AUTH=1` 跳过。
+
+### 环境变量
+
+| 变量 | 说明 |
+|---|---|
+| `FIGMA_MCP_PORT` | 优先尝试的端口，仍在 3055–3064 段内降级 |
+| `FIGMA_MCP_NO_AUTH` | `1` 关闭配对校验 |
+| `FIGMA_MCP_LOG_LEVEL` | `debug` / `info` / `warn` / `error`，日志走 stderr |
+
+### 排查
+
+- `~/.figma-mcp/last-port` 记录 server 实际绑定的端口
+- `curl http://127.0.0.1:3055/health` 看 server 是否活着、有哪些文档连上来
+- 插件面板的「日志」按钮展开活动日志
+- `npm run smoke` 用假插件跑全链路，不需要打开 Figma —— 用来区分是 server 侧还是 Figma 侧的问题
+
+---
+
+## 七、目录结构
 
 ```
 figma-mcp/
@@ -168,7 +237,7 @@ figma-mcp/
 
 ---
 
-## 七、v1 Tool 清单
+## 八、v1 Tool 清单
 
 ### 定位与导航
 | Tool | 说明 |
@@ -195,7 +264,7 @@ figma-mcp/
 
 ---
 
-## 八、v1 明确不做
+## 九、v1 明确不做
 
 - 写操作（创建/修改节点、变量 CRUD）
 - Dev Mode 深度集成
@@ -206,7 +275,7 @@ figma-mcp/
 
 ---
 
-## 九、参考
+## 十、参考
 
 - [southleft/figma-console-mcp](https://github.com/southleft/figma-console-mcp) —— 端口段扫描、重连 watchdog、manifest 缓存坑等实践来源
 - [Figma Plugin API](https://www.figma.com/plugin-docs/)

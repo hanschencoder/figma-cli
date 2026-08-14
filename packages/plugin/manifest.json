@@ -4,13 +4,42 @@
   "api": "1.0.0",
   "main": "build/code.js",
   "ui": "build/ui.html",
-  "editorType": ["figma", "dev"],
-  "capabilities": ["inspect"],
+  "editorType": [
+    "figma",
+    "dev"
+  ],
+  "capabilities": [
+    "inspect"
+  ],
   "enablePrivatePluginApi": true,
-  "permissions": ["teamlibrary"],
+  "permissions": [
+    "teamlibrary"
+  ],
   "documentAccess": "dynamic-page",
   "networkAccess": {
     "allowedDomains": [
+      "http://127.0.0.1",
+      "http://127.0.0.1:3055",
+      "http://127.0.0.1:3056",
+      "http://127.0.0.1:3057",
+      "http://127.0.0.1:3058",
+      "http://127.0.0.1:3059",
+      "http://127.0.0.1:3060",
+      "http://127.0.0.1:3061",
+      "http://127.0.0.1:3062",
+      "http://127.0.0.1:3063",
+      "http://127.0.0.1:3064",
+      "ws://127.0.0.1",
+      "ws://127.0.0.1:3055",
+      "ws://127.0.0.1:3056",
+      "ws://127.0.0.1:3057",
+      "ws://127.0.0.1:3058",
+      "ws://127.0.0.1:3059",
+      "ws://127.0.0.1:3060",
+      "ws://127.0.0.1:3061",
+      "ws://127.0.0.1:3062",
+      "ws://127.0.0.1:3063",
+      "ws://127.0.0.1:3064",
       "http://localhost",
       "http://localhost:3055",
       "http://localhost:3056",
@@ -22,7 +51,6 @@
       "http://localhost:3062",
       "http://localhost:3063",
       "http://localhost:3064",
-      "http://127.0.0.1",
       "ws://localhost",
       "ws://localhost:3055",
       "ws://localhost:3056",
@@ -33,11 +61,32 @@
       "ws://localhost:3061",
       "ws://localhost:3062",
       "ws://localhost:3063",
-      "ws://localhost:3064",
-      "ws://127.0.0.1"
+      "ws://localhost:3064"
     ],
     "reasoning": "Connects to a local MCP server over WebSocket on 127.0.0.1 (port range 3055-3064 for fallback when a port is occupied). No data leaves the machine.",
     "devAllowedDomains": [
+      "http://127.0.0.1",
+      "http://127.0.0.1:3055",
+      "http://127.0.0.1:3056",
+      "http://127.0.0.1:3057",
+      "http://127.0.0.1:3058",
+      "http://127.0.0.1:3059",
+      "http://127.0.0.1:3060",
+      "http://127.0.0.1:3061",
+      "http://127.0.0.1:3062",
+      "http://127.0.0.1:3063",
+      "http://127.0.0.1:3064",
+      "ws://127.0.0.1",
+      "ws://127.0.0.1:3055",
+      "ws://127.0.0.1:3056",
+      "ws://127.0.0.1:3057",
+      "ws://127.0.0.1:3058",
+      "ws://127.0.0.1:3059",
+      "ws://127.0.0.1:3060",
+      "ws://127.0.0.1:3061",
+      "ws://127.0.0.1:3062",
+      "ws://127.0.0.1:3063",
+      "ws://127.0.0.1:3064",
       "http://localhost",
       "http://localhost:3055",
       "http://localhost:3056",
@@ -49,7 +98,6 @@
       "http://localhost:3062",
       "http://localhost:3063",
       "http://localhost:3064",
-      "http://127.0.0.1",
       "ws://localhost",
       "ws://localhost:3055",
       "ws://localhost:3056",
@@ -60,8 +108,7 @@
       "ws://localhost:3061",
       "ws://localhost:3062",
       "ws://localhost:3063",
-      "ws://localhost:3064",
-      "ws://127.0.0.1"
+      "ws://localhost:3064"
     ]
   }
 }
