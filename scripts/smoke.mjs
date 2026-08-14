@@ -30,6 +30,7 @@ const CARD = {
   type: 'FRAME',
   w: 340,
   h: 420,
+  abs: [0, 0],
   layout: { mode: 'VERTICAL', gap: 16, padding: [20, 20, 20, 20] },
   fills: [{ kind: 'solid', color: '#FFFFFF', token: { name: 'surface/card', value: '#FFFFFF' } }],
   cornerRadius: 12,
@@ -82,9 +83,64 @@ const CARD = {
         },
       ],
     },
-    { id: '12:39', name: 'actions', type: 'FRAME', w: 300, h: 40, childCount: 3, truncated: true },
+    { id: '12:39', name: 'actions', type: 'FRAME', w: 300, h: 40, childCount: 3, descendants: 47, truncated: true },
+    // 图标：应折叠成一行 type: Icon
+    {
+      id: '12:40', name: '图标 / 收藏', type: 'INSTANCE', w: 24, h: 24, abs: [20, 300],
+      component: { mainComponentName: '图标 / 收藏', remote: true },
+      children: [
+        { id: '12:41', name: 'Vector', type: 'VECTOR', w: 18, h: 18, x: 3, y: 3,
+          fills: [{ kind: 'solid', color: '#1E1E1E', token: { name: 'color/text-primary' } }] },
+      ],
+    },
+    // 系统 chrome：应折叠成一行 type: SystemChrome
+    {
+      id: '12:50', name: 'StatusBar 状态栏', type: 'INSTANCE', w: 340, h: 34, abs: [0, 0],
+      layout: { mode: 'HORIZONTAL', padding: [8, 20, 7, 20], primaryAlign: 'SPACE_BETWEEN' },
+      component: { mainComponentName: 'StatusBar 状态栏', remote: true },
+      children: [
+        { id: '12:51', name: '时间', type: 'TEXT', w: 40, h: 20, text: { characters: '18:30' } },
+        { id: '12:52', name: '右侧图标组', type: 'FRAME', w: 66, h: 22,
+          children: [{ id: '12:53', name: 'wifi', type: 'VECTOR', w: 16, h: 12 }] },
+      ],
+    },
+    // 未绑 token 的描边：文件含 Dark mode 时这是 error 级问题，且 grep 抓不到
+    {
+      id: '12:70', name: '环形进度提示', type: 'FRAME', w: 24, h: 24, abs: [300, 20],
+      strokes: [{ kind: 'solid', color: '#000000', opacity: 0.15 }], strokeWeight: 2,
+      children: [
+        { id: '12:71', name: 'Arc', type: 'VECTOR', w: 20, h: 20,
+          fills: [{ kind: 'solid', color: '#0A84FF', token: { name: 'color/brand' } }] },
+      ],
+    },
+    // 结构同构的相邻兄弟：第一个完整展开，其余折叠成 sameAs
+    {
+      id: '12:60', name: 'list', type: 'FRAME', w: 300, h: 144, abs: [20, 360],
+      layout: { mode: 'VERTICAL', gap: 8 },
+      children: [row('12:61', '工作', 320), row('12:62', '旅游', 368), row('12:63', '理财', 416)],
+    },
   ],
 };
+
+/** 三个结构完全相同、只有文案不同的列表行 */
+function row(id, text, y) {
+  return {
+    id, name: '侧边栏', type: 'INSTANCE', w: 300, h: 40, abs: [20, y],
+    layout: { mode: 'HORIZONTAL', gap: 12, padding: [8, 12, 8, 12], counterAlign: 'CENTER' },
+    layoutChild: { sizingH: 'FILL', sizingV: 'HUG' },
+    component: { mainComponentName: '侧边栏', remote: true },
+    children: [
+      { id: `I${id};1`, name: 'icon', type: 'INSTANCE', w: 24, h: 24,
+        component: { mainComponentName: 'icon', remote: true },
+        children: [{ id: `I${id};2`, name: 'Vector', type: 'VECTOR', w: 20, h: 20,
+          fills: [{ kind: 'solid', color: '#1E1E1E', token: { name: 'color/text-primary' } }] }] },
+      { id: `I${id};3`, name: 'label', type: 'TEXT', w: 240, h: 21,
+        layoutChild: { sizingH: 'FILL' },
+        text: { characters: text, fontSize: 14, fontFamily: 'Inter', fontStyle: 'Medium', lineHeight: '21px' },
+        fills: [{ kind: 'solid', color: '#1E1E1E', token: { name: 'color/text-primary' } }] },
+    ],
+  };
+}
 
 /** 一张 1x1 的透明 PNG，用来验证分片与 image content 通路 */
 const TINY_PNG = Buffer.from(
@@ -92,7 +148,13 @@ const TINY_PNG = Buffer.from(
   'base64',
 );
 
-const TINY_SVG = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"/>', 'utf8');
+const TINY_SVG = Buffer.from(
+  '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24">\n' +
+    '  <path d="M1 1h4v4H1z" fill="#1E1E1E"/>\n' +
+    '  <path d="M8 8h4v4H8z" fill="red"/>\n' +
+    '</svg>',
+  'utf8',
+);
 
 const RESPONSES = {
   'doc.context': () => ({
@@ -104,7 +166,19 @@ const RESPONSES = {
     pages: [{ id: '0:1', name: 'Page 1' }],
     selection: [{ ...CARD, children: undefined }],
   }),
-  'node.tree': () => ({ roots: [CARD], nodeCount: 6 }),
+  'node.tree': (params) =>
+    params?.stat
+      ? {
+          roots: [],
+          nodeCount: 0,
+          origin: { id: '12:34', name: 'ProductCard' },
+          stats: (CARD.children ?? []).map((c) => ({
+            id: c.id, name: c.name, type: c.type,
+            descendants: c.descendants ?? (c.children?.length ?? 0), depth: 2,
+            ...(c.type === 'INSTANCE' ? { instance: true } : {}),
+          })),
+        }
+      : { roots: [CARD], nodeCount: 6, origin: { id: '12:34', name: 'ProductCard' } },
   'node.detail': () => ({ nodes: [CARD] }),
   'node.search': () => ({
     matches: [
@@ -247,11 +321,16 @@ function connectFakePlugin(port) {
               {
                 id: '12:35', name: 'icon / search', type: 'FRAME', width: 24, height: 24,
                 settings: [{ format: 'SVG' }, { format: 'PNG', scale: 2, suffix: '@2x' }],
+                paints: [{ color: '#1e1e1e', token: 'color/text-primary' }],
               },
               // 同名图层：文件名必须自动去重，不能互相覆盖
               { id: '12:36', name: 'icon / search', type: 'FRAME', width: 24, height: 24, settings: [{ format: 'SVG' }] },
               // 没配导出设置：走默认 PNG @1x
               { id: '12:39', name: 'Plain Frame', type: 'FRAME', width: 48, height: 48, settings: [] },
+              // 实例内部节点：图层名没意义，文件名必须回退到主组件名（中文要保住）
+              { id: 'I12:40;64:2356', name: 'Vector', type: 'VECTOR', width: 24, height: 24,
+                component: '文件2', settings: [{ format: 'SVG' }],
+                paints: [{ color: '#1e1e1e', token: 'color/text-primary' }, { color: '#ff0000' }] },
             ],
           },
         }));
@@ -291,7 +370,7 @@ function connectFakePlugin(port) {
       const make = RESPONSES[msg.method];
       ws.send(JSON.stringify(
         make
-          ? { type: 'res', id: msg.id, ok: true, result: make() }
+          ? { type: 'res', id: msg.id, ok: true, result: make(msg.params) }
           : { type: 'res', id: msg.id, ok: false, error: { code: 'UNSUPPORTED', message: `假插件未实现 ${msg.method}` } },
       ));
     });
@@ -336,7 +415,7 @@ async function main() {
     check('initialize', init.serverInfo?.name === 'figma-mcp', init.serverInfo?.version);
 
     const { tools } = await client.request('tools/list', {});
-    check('tools/list', tools.length === 12, `${tools.length} 个 tool`);
+    check('tools/list', tools.length === 15, `${tools.length} 个 tool`);
 
     // 目标文档不存在时应给出可操作的提示，而不是崩掉。
     // 不用「没有任何连接」来断言 —— Figma 开着时真实插件可能已经连上来了。
@@ -377,6 +456,98 @@ async function main() {
       console.log(indent(body));
     }
 
+    // ---- 输出压缩与防错（规格第 8 节的回归断言）
+    const treeBody = extractText(
+      await client.request('tools/call', { name: 'get_node_tree', arguments: { docId: DOC_ID } }),
+    );
+    check('tree 带 abs 绝对坐标', treeBody.includes('abs: [20, 300]'), '12:40');
+    check('tree 标注 abs 原点', treeBody.includes('# abs 坐标原点：12:34'));
+    check('more 带 descendants 计数', treeBody.includes('descendants: 47'));
+    check(
+      '图标折叠成一行 Icon',
+      treeBody.includes('{type: Icon, name: 图标 / 收藏, id: "12:40"') &&
+        !treeBody.includes('12:41'),
+    );
+    check(
+      '系统 chrome 折叠成一行',
+      treeBody.includes('type: SystemChrome') &&
+        treeBody.includes('exportable: [{name: 右侧图标组, id: "12:52"') &&
+        !treeBody.includes('12:53'),
+    );
+    check(
+      '同构兄弟折叠成 sameAs',
+      treeBody.includes('{sameAs: "12:61", id: "12:62"') &&
+        treeBody.includes('diff: {text: 旅游}'),
+    );
+    check('折叠后每个原始 id 仍可检索', ['12:40', '12:50', '12:61', '12:62', '12:63'].every((id) => treeBody.includes(id)));
+
+    const rawBody = extractText(
+      await client.request('tools/call', {
+        name: 'get_node_tree',
+        arguments: { docId: DOC_ID, expandIcons: true, expandSystem: true, dedupe: false },
+      }),
+    );
+    check(
+      '关掉折叠后能看到原样',
+      rawBody.includes('12:41') && rawBody.includes('12:53') && rawBody.length > treeBody.length,
+      `${rawBody.split('\n').length} 行 → ${treeBody.split('\n').length} 行`,
+    );
+
+    const statBody = extractText(
+      await client.request('tools/call', {
+        name: 'get_node_tree',
+        arguments: { docId: DOC_ID, stat: true },
+      }),
+    );
+    check('--stat 只出结构统计', statBody.includes('descendants: 47') && !statBody.includes('AirPods'));
+
+    const styleBody = extractText(
+      await client.request('tools/call', { name: 'get_styles', arguments: { docId: DOC_ID } }),
+    );
+    check('styles 解析字重与行高', styleBody.includes('weight: 600') && styleBody.includes('lineHeight: 24'));
+    check('styles 输出不含 auto', !styleBody.includes('auto'));
+
+    const cssBody = extractText(
+      await client.request('tools/call', {
+        name: 'get_node_css',
+        arguments: { docId: DOC_ID, id: '12:34' },
+      }),
+    );
+    check(
+      'css 机械翻译布局',
+      cssBody.includes('flex-direction: column') &&
+        cssBody.includes('gap: 16px') &&
+        cssBody.includes('padding: 20px'),
+    );
+    check('css 保留 token 而不是字面值', cssBody.includes('var(--surface-card)'));
+
+    const lintBody = extractText(
+      await client.request('tools/call', {
+        name: 'lint_design',
+        arguments: { docId: DOC_ID, rootId: '12:34' },
+      }),
+    );
+    check(
+      'lint 抓到 grep 抓不到的描边裸色值',
+      lintBody.includes('dark-mode-hazard') && lintBody.includes('12:70'),
+    );
+    check('lint 抓到未绑样式的裸字号', lintBody.includes('unbound-font'));
+    check('lint 给出可读层级路径', lintBody.includes('path: ProductCard › '));
+
+    const planBody = extractText(
+      await client.request('tools/call', { name: 'plan_page', arguments: { docId: DOC_ID } }),
+    );
+    check(
+      'plan 一次给全调研信息',
+      ['target:', 'structure:', 'components:', 'tokens:', 'assets:', 'text:'].every((k) =>
+        planBody.includes(k),
+      ),
+      `${planBody.split('\n').length} 行`,
+    );
+    check('plan 聚合组件复用信号', planBody.includes('{of: 侧边栏') && planBody.includes('count: 3'));
+    check('plan 行数在预算内', planBody.split('\n').length <= 150);
+    if (process.env.SMOKE_SHOW_PLAN) console.log(indent(planBody));
+
     // CLI 前端走同一个 daemon 的 HTTP /call，验证两个前端结果一致。
     // 必须异步 —— 假插件就跑在本进程里，execFileSync 会把事件循环堵死，
     // 插件回不了消息，请求只能等到超时。
@@ -398,7 +569,7 @@ async function main() {
     check(
       'CLI export 默认按节点自带的导出设置切图',
       readdirSync(outA).sort().join(' ') ===
-        'Plain-Frame.png icon-search-2.svg icon-search.svg icon-search@2x.png',
+        'Plain-Frame.png icon-search-2.svg icon-search.svg icon-search@2x.png 文件2.svg',
       readdirSync(outA).sort().join(' '),
     );
     check('CLI export 同名图层自动去重', readdirSync(outA).includes('icon-search-2.svg'));
@@ -414,12 +585,36 @@ async function main() {
       readdirSync(outB).sort().join(' ') ===
         'Plain-Frame.png Plain-Frame@2x.png Plain-Frame@3x.png ' +
         'icon-search-2.png icon-search-2@2x.png icon-search-2@3x.png ' +
-        'icon-search.png icon-search@2x.png icon-search@3x.png',
+        'icon-search.png icon-search@2x.png icon-search@3x.png ' +
+        '文件2.png 文件2@2x.png 文件2@3x.png',
       readdirSync(outB).sort().join(' '),
     );
 
+    const outC = mkdtempSync(join(tmpdir(), 'figma-smoke-'));
+    await cli([
+      'export', '12:35', '--recursive', '--format', 'SVG',
+      '--out', relative(process.cwd(), outC), '--doc-id', DOC_ID,
+    ]);
+    check(
+      'CLI export 文件名回退到主组件名（中文不被削掉）',
+      readdirSync(outC).includes('文件2.svg'),
+      readdirSync(outC).sort().join(' '),
+    );
+
+    const stdout = await cli([
+      'export', '12:35', '--recursive', '--format', 'SVG', '--stdout', '--currentcolor',
+      '--doc-id', DOC_ID,
+    ]);
+    check('CLI export --stdout 直接给出 SVG 源码', stdout.includes('svg: |') && stdout.includes('<path'));
+    check(
+      'CLI export --currentcolor 只换绑了 token 的颜色',
+      stdout.includes('fill="currentColor"') && stdout.includes('fill="red"'),
+    );
+    check('CLI export --stdout 给出该设哪个 token', stdout.includes('token: $color/text-primary'));
+
     rmSync(outA, { recursive: true, force: true });
     rmSync(outB, { recursive: true, force: true });
+    rmSync(outC, { recursive: true, force: true });
 
     ws.close();
   } finally {

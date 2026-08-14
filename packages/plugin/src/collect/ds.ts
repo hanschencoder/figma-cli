@@ -24,6 +24,7 @@ import {
   mapPaints,
   num,
 } from './common.js';
+import { measuredLineHeight } from './node.js';
 
 // ---------------------------------------------------------------- 变量
 
@@ -36,6 +37,7 @@ export async function collectVariables(
     library?: boolean;
     values?: boolean;
     scan?: boolean;
+    usedBy?: string;
   },
 ): Promise<{
   collections: VariableCollectionInfo[];
@@ -44,6 +46,14 @@ export async function collectVariables(
   libraryCount?: number;
   scanned?: number;
 }> {
+  // usedBy 是「这一页/这个子树用了什么」，本地集合和 teamLibrary 清单回答的是
+  // 「这个文件里有什么」—— 两者混在一起就又变成要落盘 grep 的大表了
+  if (opts.usedBy) {
+    const scan = await scanUsage(opts.usedBy);
+    const collections = await referencedCollections(cache, opts, scan.variables, new Set(), true);
+    return { collections, truncated: false, scanned: scan.nodes };
+  }
+
   const all = await figma.variables.getLocalVariableCollectionsAsync();
   const selected = opts.collectionId
     ? all.filter((c) => c.id === opts.collectionId)
@@ -100,37 +110,34 @@ export async function collectVariables(
   let scanned: number | undefined;
   if (opts.scan !== false && !opts.collectionId) {
     const known = new Set(collections.map((c) => c.id));
-    const { collections: referenced, nodes } = await collectReferencedCollections(cache, opts, known);
-    collections.push(...referenced);
-    scanned = nodes;
+    const scan = await scanUsage(undefined);
+    collections.push(...(await referencedCollections(cache, opts, scan.variables, known, false)));
+    scanned = scan.nodes;
   }
 
   return { collections, truncated, libraryError, libraryCount, scanned };
 }
 
 /**
- * 从当前页被引用的变量反查集合。
+ * 从被引用的变量反查集合。
  *
  * 只需要每个集合里的**任意一个**变量就能拿到 collectionId，进而拿到它的
- * modes 和完整 variableIds —— 所以扫描可以在见到足够多的集合后早早停下。
+ * modes 和完整 variableIds。
+ *
+ * `onlyUsed` 时不再把集合自报的变量补齐 —— 那会把 8 个用到的 token 变成
+ * 三百个，正好是 usedBy 想避免的事。
  */
-async function collectReferencedCollections(
+async function referencedCollections(
   cache: ResolveCache,
   opts: { expand: boolean; limit: number },
+  uses: Map<string, number>,
   known: Set<string>,
-): Promise<{ collections: VariableCollectionInfo[]; nodes: number }> {
-  const page = figma.currentPage;
-  const nodes = 'findAll' in page ? page.findAll(hasBoundVariables) : [];
-
-  const variableIds = new Set<string>();
-  for (const node of nodes.slice(0, SCAN_NODE_LIMIT)) {
-    for (const id of boundVariableIds(node)) variableIds.add(id);
-  }
-
+  onlyUsed: boolean,
+): Promise<VariableCollectionInfo[]> {
   // collectionId → 这个集合里被引用到的变量 id。
   // 远端集合的 variableIds 有时是空的，那时候至少还有这些兜底
   const byCollection = new Map<string, Set<string>>();
-  for (const id of variableIds) {
+  for (const id of uses.keys()) {
     const variable = await cache.variable(id);
     if (!variable || known.has(variable.variableCollectionId)) continue;
     const set = byCollection.get(variable.variableCollectionId) ?? new Set<string>();
@@ -143,8 +150,9 @@ async function collectReferencedCollections(
     const collection = await figma.variables.getVariableCollectionByIdAsync(collectionId);
     if (!collection) continue;
 
-    // 集合自报的变量 ∪ 实际引用到的变量
-    const ids = [...new Set([...collection.variableIds, ...referencedIds])];
+    const ids = onlyUsed
+      ? [...referencedIds]
+      : [...new Set([...collection.variableIds, ...referencedIds])];
     if (ids.length === 0) continue;
 
     const info: VariableCollectionInfo = {
@@ -161,22 +169,77 @@ async function collectReferencedCollections(
       const variables: VariableInfo[] = [];
       for (const id of ids.slice(0, opts.limit)) {
         const variable = await cache.variable(id);
-        if (variable) variables.push(await mapVariable(variable, collection, cache));
+        if (!variable) continue;
+        const mapped = await mapVariable(variable, collection, cache);
+        const count = uses.get(id);
+        if (count !== undefined) mapped.uses = count;
+        variables.push(mapped);
       }
+      // 引用最多的排前面：那几个就是最该先和项目 token 对齐的
+      variables.sort((a, b) => (b.uses ?? 0) - (a.uses ?? 0));
       info.variables = variables;
     }
     out.push(info);
   }
 
-  return { collections: out, nodes: Math.min(nodes.length, SCAN_NODE_LIMIT) };
+  return out;
 }
 
 /** 扫描节点数上限。大页面上全量遍历会卡住 Figma 主线程。 */
 const SCAN_NODE_LIMIT = 3000;
 
-function hasBoundVariables(node: SceneNode): boolean {
-  const bound = (node as { boundVariables?: Record<string, unknown> }).boundVariables;
-  return bound !== undefined && Object.keys(bound).length > 0;
+/**
+ * 一次遍历，把「这个子树引用了什么」全部收齐。
+ *
+ * 变量、样式、以及文字样式的实测行高走的是同一趟遍历 —— 它们的开销都在
+ * findAll 上，分三次扫是三倍成本。
+ */
+export interface UsageScan {
+  /** variableId → 引用次数 */
+  variables: Map<string, number>;
+  /** styleId → 引用次数 */
+  styles: Map<string, number>;
+  /** textStyleId → 实测行高（单行文本的渲染高度） */
+  lineHeights: Map<string, number>;
+  nodes: number;
+}
+
+export async function scanUsage(usedBy: string | undefined): Promise<UsageScan> {
+  const scan: UsageScan = {
+    variables: new Map(),
+    styles: new Map(),
+    lineHeights: new Map(),
+    nodes: 0,
+  };
+
+  let root: BaseNode = figma.currentPage;
+  if (usedBy) {
+    const node = await figma.getNodeByIdAsync(usedBy).catch(() => null);
+    if (!node) return scan;
+    root = node;
+  }
+
+  const all: SceneNode[] =
+    'findAll' in root ? (root as PageNode | FrameNode).findAll(() => true) : [];
+  const nodes = root.type === 'PAGE' || root.type === 'DOCUMENT' ? all : [root as SceneNode, ...all];
+
+  for (const node of nodes.slice(0, SCAN_NODE_LIMIT)) {
+    scan.nodes++;
+    for (const id of boundVariableIds(node)) {
+      scan.variables.set(id, (scan.variables.get(id) ?? 0) + 1);
+    }
+    for (const id of nodeStyleIds(node)) {
+      scan.styles.set(id, (scan.styles.get(id) ?? 0) + 1);
+    }
+    if (node.type === 'TEXT') {
+      const styleId = (node as TextNode).textStyleId;
+      if (typeof styleId === 'string' && styleId && !scan.lineHeights.has(styleId)) {
+        const measured = measuredLineHeight(node as TextNode);
+        if (measured !== undefined) scan.lineHeights.set(styleId, measured);
+      }
+    }
+  }
+  return scan;
 }
 
 function boundVariableIds(node: SceneNode): string[] {
@@ -328,54 +391,67 @@ async function mapVariableValue(
 
 export async function collectStyles(
   cache: ResolveCache,
-  opts: { type?: StyleInfo['type']; limit: number; scan?: boolean },
+  opts: { type?: StyleInfo['type']; limit: number; scan?: boolean; usedBy?: string },
 ): Promise<{ styles: StyleInfo[]; truncated: boolean; scanned?: number }> {
   const out: StyleInfo[] = [];
   let truncated = false;
 
   const wants = (t: StyleInfo['type']) => !opts.type || opts.type === t;
 
-  if (wants('PAINT')) {
-    for (const style of await figma.getLocalPaintStylesAsync()) {
-      const info = base(style, 'PAINT');
-      const paints = await mapPaints(style.paints, undefined, cache);
-      if (paints) info.paints = paints;
-      out.push(info);
+  // usedBy 只回答「这个子树用了哪几个样式」，本地清单是另一个问题
+  if (!opts.usedBy) {
+    if (wants('PAINT')) {
+      for (const style of await figma.getLocalPaintStylesAsync()) {
+        const info = base(style, 'PAINT');
+        const paints = await mapPaints(style.paints, undefined, cache);
+        if (paints) info.paints = paints;
+        out.push(info);
+      }
     }
-  }
 
-  if (wants('TEXT')) {
-    for (const style of await figma.getLocalTextStylesAsync()) {
-      const info = base(style, 'TEXT');
-      info.text = textStyleInfo(style);
-      out.push(info);
+    if (wants('TEXT')) {
+      for (const style of await figma.getLocalTextStylesAsync()) {
+        const info = base(style, 'TEXT');
+        info.text = textStyleInfo(style);
+        out.push(info);
+      }
     }
-  }
 
-  if (wants('EFFECT')) {
-    for (const style of await figma.getLocalEffectStylesAsync()) {
-      const info = base(style, 'EFFECT');
-      const effects = await mapEffects(style.effects, undefined, cache);
-      if (effects) info.effects = effects;
-      out.push(info);
+    if (wants('EFFECT')) {
+      for (const style of await figma.getLocalEffectStylesAsync()) {
+        const info = base(style, 'EFFECT');
+        const effects = await mapEffects(style.effects, undefined, cache);
+        if (effects) info.effects = effects;
+        out.push(info);
+      }
     }
-  }
 
-  if (wants('GRID')) {
-    for (const style of await figma.getLocalGridStylesAsync()) {
-      out.push(base(style, 'GRID'));
+    if (wants('GRID')) {
+      for (const style of await figma.getLocalGridStylesAsync()) {
+        out.push(base(style, 'GRID'));
+      }
     }
   }
 
   // 和变量同一个问题：样式基本都定义在远端库里，getLocal* 只给本文件的。
   // 节点上的 fillStyleId / textStyleId 拿去 getStyleByIdAsync 对远端样式同样有效，
-  // 所以扫一遍页面就能把「实际用到的那些样式」的完整定义反查出来。
+  // 所以扫一遍就能把「实际用到的那些样式」的完整定义反查出来。
   let scanned: number | undefined;
-  if (opts.scan !== false) {
+  if (opts.scan !== false || opts.usedBy) {
     const known = new Set(out.map((style) => style.id));
-    const { styles: referenced, nodes } = await collectReferencedStyles(cache, opts, known);
-    out.push(...referenced);
-    scanned = nodes;
+    const scan = await scanUsage(opts.usedBy);
+    out.push(...(await referencedStyles(cache, opts, scan, known)));
+    scanned = scan.nodes;
+
+    // auto 行高从实测值补齐，本地样式同样受益
+    for (const style of out) {
+      if (style.type !== 'TEXT' || style.text?.lineHeight !== 'auto') continue;
+      const measured = scan.lineHeights.get(style.id);
+      if (measured !== undefined) {
+        style.text.lineHeight = `${measured}px`;
+        style.text.lineHeightAuto = true;
+      }
+    }
   }
 
   if (out.length > opts.limit) {
@@ -404,69 +480,59 @@ function nodeStyleIds(node: SceneNode): string[] {
   return out;
 }
 
-async function collectReferencedStyles(
+async function referencedStyles(
   cache: ResolveCache,
   opts: { type?: StyleInfo['type']; limit: number },
+  scan: UsageScan,
   known: Set<string>,
-): Promise<{ styles: StyleInfo[]; nodes: number }> {
-  const page = figma.currentPage;
-  const nodes = 'findAll' in page ? page.findAll((n) => nodeStyleIds(n).length > 0) : [];
-
-  const ids = new Set<string>();
-  for (const node of nodes.slice(0, SCAN_NODE_LIMIT)) {
-    for (const id of nodeStyleIds(node)) {
-      if (!known.has(id)) ids.add(id);
-    }
-  }
-
+): Promise<StyleInfo[]> {
   const wants = (t: StyleInfo['type']) => !opts.type || opts.type === t;
   const out: StyleInfo[] = [];
 
-  for (const id of ids) {
+  for (const [id, uses] of scan.styles) {
+    if (known.has(id)) continue;
     if (out.length >= opts.limit) break;
     const style = await figma.getStyleByIdAsync(id);
     if (!style) continue;
 
+    let info: StyleInfo | undefined;
     switch (style.type) {
       case 'PAINT': {
         if (!wants('PAINT')) continue;
-        const info = base(style, 'PAINT');
+        info = base(style, 'PAINT');
         const paints = await mapPaints((style as PaintStyle).paints, undefined, cache);
         if (paints) info.paints = paints;
-        info.referenced = true;
-        out.push(info);
         break;
       }
       case 'TEXT': {
         if (!wants('TEXT')) continue;
-        const info = base(style, 'TEXT');
+        info = base(style, 'TEXT');
         info.text = textStyleInfo(style as TextStyle);
-        info.referenced = true;
-        out.push(info);
         break;
       }
       case 'EFFECT': {
         if (!wants('EFFECT')) continue;
-        const info = base(style, 'EFFECT');
+        info = base(style, 'EFFECT');
         const effects = await mapEffects((style as EffectStyle).effects, undefined, cache);
         if (effects) info.effects = effects;
-        info.referenced = true;
-        out.push(info);
         break;
       }
       case 'GRID': {
         if (!wants('GRID')) continue;
-        const info = base(style, 'GRID');
-        info.referenced = true;
-        out.push(info);
+        info = base(style, 'GRID');
         break;
       }
       default:
-        break;
+        continue;
     }
+
+    info.referenced = true;
+    info.uses = uses;
+    out.push(info);
   }
 
-  return { styles: out, nodes: Math.min(nodes.length, SCAN_NODE_LIMIT) };
+  out.sort((a, b) => (b.uses ?? 0) - (a.uses ?? 0));
+  return out;
 }
 
 function base(style: BaseStyle, type: StyleInfo['type']): StyleInfo {

@@ -14,6 +14,7 @@ import type {
   DocumentIdentity,
   NodeInfo,
   NodeMatch,
+  NodeStat,
   StyleInfo,
   TextItem,
   VariableCollectionInfo,
@@ -152,6 +153,8 @@ export type DocContextResult = DocumentContext;
 export interface NodeTreeParams {
   /** 省略时用当前选中项；选中为空时用当前页 */
   rootId?: string;
+  /** 一次取多棵树。给了就忽略 rootId —— 三个区块各来一条命令纯属浪费往返 */
+  rootIds?: string[];
   /** 展开层数，0 表示只要根节点自身 */
   depth?: number;
   includeHidden?: boolean;
@@ -163,12 +166,25 @@ export interface NodeTreeParams {
   expandInstances?: boolean;
   /** 单次返回的节点数上限，防止大文件把 context 撑爆 */
   maxNodes?: number;
+  /** full 会带上 stroke / effect 细节和节点级变量绑定，走查（lint）需要 */
+  detail?: 'compact' | 'full';
+  /**
+   * 给每个节点补 abs 绝对坐标（相对本次根节点），默认 true。
+   * 大树上想省这一行可以关掉。
+   */
+  abs?: boolean;
+  /** 只出结构规模统计，不出内容。用来决定「这棵树该不该展开」 */
+  stat?: boolean;
 }
 export interface NodeTreeResult {
   roots: NodeInfo[];
   /** 因 maxNodes 截断 */
   truncated?: boolean;
   nodeCount: number;
+  /** stat 模式下的结构统计，此时 roots 为空 */
+  stats?: NodeStat[];
+  /** abs 坐标的原点，用来在输出里标注坐标系 */
+  origin?: { id: string; name: string };
 }
 
 export interface NodeDetailParams {
@@ -260,6 +276,16 @@ export interface ExportTarget {
   height: number;
   /** 节点自带的导出设置，没配就是空数组 */
   settings: ExportSpec[];
+  /**
+   * 主组件名（自身是实例，或最近的实例祖先）。
+   * 实例内部的节点图层名多半是 "Vector"，甚至只有 id —— 那种文件名进不了项目。
+   */
+  component?: string;
+  /**
+   * 子树里出现的纯色填充/描边。用于 --currentcolor：
+   * 绑了 token 的色值可以安全换成 currentColor，裸色值不行（可能是有意的多色图标）。
+   */
+  paints?: { color: string; token?: string }[];
 }
 
 export interface NodeExportPlanResult {
@@ -314,6 +340,12 @@ export interface DsVariablesParams {
    * 那条路是空的，这条路才拿得到设计稿真正在用的那套 token。
    */
   scan?: boolean;
+  /**
+   * 只返回这个子树实际引用到的变量，并给出每个变量的引用次数。
+   * 给了它就不再列本地集合和 teamLibrary 清单 —— 那些是「文件里有什么」，
+   * 而写这一页代码需要的是「这一页用了什么」。
+   */
+  usedBy?: string;
 }
 export interface DsVariablesResult {
   collections: VariableCollectionInfo[];
@@ -335,6 +367,8 @@ export interface DsStylesParams {
   limit?: number;
   /** 从当前页实际引用到的 styleId 反查样式定义，默认 true。理由同 DsVariablesParams.scan */
   scan?: boolean;
+  /** 只返回这个子树实际引用到的样式，并给出引用次数。理由同 DsVariablesParams.usedBy */
+  usedBy?: string;
 }
 export interface DsStylesResult {
   styles: StyleInfo[];

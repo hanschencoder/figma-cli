@@ -15,6 +15,27 @@ MCP 和 CLI 两条路径。**不需要打开 Figma。** 改了 YAML 序列化或
   `execFileSync` 会堵死事件循环，插件回不了消息，请求只能等到超时
 - 所有 tool 调用要显式带 `docId`。Figma 开着时真实插件也会连上来，两个文档并存会让
   路由（正确地）拒绝猜测目标
+- 假插件的 `node.tree` 要能识别 `params.stat`（`--stat` 模式返回 `stats` 而非 `roots`）；
+  `node.exportPlan` 的 target 要带 `component` / `paints`，否则测不到文件名回退和
+  `--currentcolor`。合成数据里应保留一组结构同构的兄弟、一个图标、一个状态栏，
+  折叠逻辑才有东西可折
+
+## 回归断言
+
+合成的 `CARD` 覆盖了这些「机械可消除的冗余」和「静默出错」场景，对应的断言不能退化：
+
+| 断言 | 覆盖的规格项 |
+|---|---|
+| `abs: [x, y]` + `# abs 坐标原点` 注释 | P3 绝对坐标 |
+| `more: true` 带 `descendants` | P11 后代计数 |
+| `{type: Icon, ...}` 且不含内部矢量 id | P2 图标折叠 |
+| `{type: SystemChrome, ...}` 且不含内部 id | P5 系统 chrome |
+| `{sameAs, diff}` | P1 同构兄弟折叠 |
+| `--no-dedupe` 等开关能看回原样、原始 id 仍可检索 | 折叠是有损的、必须可逆 |
+| `styles` 出 `weight` / `lineHeight`、不含 `auto` | P4 行高字重 |
+| `export --stdout --currentcolor` 只换绑 token 的色、文件名回退主组件名 | P8 |
+| `plan` 各段齐全且 ≤150 行 | P6 |
+| `lint` 抓到描边裸色值（grep 抓不到的那类） | P9 |
 
 ## 对真实设计稿验证
 

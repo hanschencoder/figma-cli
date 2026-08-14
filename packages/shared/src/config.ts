@@ -48,3 +48,41 @@ export const MAX_IMAGE_DIMENSION = 1500;
 
 /** 运行时状态目录（相对 home 目录）：daemon.json、daemon.log、导出的图片。 */
 export const STATE_DIR = '.figma-mcp';
+
+/**
+ * 系统 chrome 组件名单。
+ *
+ * 状态栏、Home Indicator、键盘这类东西**每一张移动端设计稿上都有**，
+ * 展开它们要花两百行换四个事实（容器高、padding、时间文案、图标组 id），
+ * 而真实工程里这部分通常由系统或独立组件提供，根本不该由页面还原。
+ *
+ * 匹配是「名字里包含其中一项」，大小写不敏感。用户可以在
+ * `~/.figma-mcp/config.json` 的 `systemComponents` 里追加。
+ */
+export const SYSTEM_CHROME_NAMES: readonly string[] = [
+  'statusbar',
+  'status bar',
+  '状态栏',
+  'homeindicator',
+  'home indicator',
+  'home_indicator',
+  'navigationbar',
+  'navigation bar',
+  '导航栏',
+  'keyboard',
+  '键盘',
+  'dynamicisland',
+  'dynamic island',
+  '灵动岛',
+];
+
+/** 生成一个「这个图层名算不算系统 chrome」的判定函数。 */
+export function systemChromeMatcher(
+  extra: readonly string[] = [],
+): (name: string) => boolean {
+  const needles = [...SYSTEM_CHROME_NAMES, ...extra.map((n) => n.toLowerCase())];
+  return (name: string) => {
+    const lower = name.toLowerCase();
+    return needles.some((needle) => lower.includes(needle));
+  };
+}

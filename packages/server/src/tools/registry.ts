@@ -8,7 +8,7 @@
  * 输出一律是 **YAML**，字段无意义时一律省略 —— 上下文预算是第一约束。
  */
 
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { z } from 'zod';
@@ -17,6 +17,7 @@ import {
   MAX_IMAGE_DIMENSION,
   Method,
   STATE_DIR,
+  systemChromeMatcher,
   type ExportFormat,
   type ExportSpec,
   type ExportTarget,
@@ -26,11 +27,31 @@ import {
 import { BridgeError, type Hub } from '../hub.js';
 import { log } from '../logger.js';
 import type { DocumentRouter } from '../router.js';
+import { cssRules, DEFAULT_CSS } from '../css.js';
+import type { FoldOptions } from '../fold.js';
+import { lintContextOf, lintTree, type LintLevel } from '../lint.js';
 import {
+  collectAssets,
+  collectComponentUses,
+  collectSpacing,
+  collectTextStyles,
+  collectTexts,
+  LINE_BUDGET,
+  PLAN_SECTIONS,
+  pruneTree,
+  type PlanSection,
+} from '../plan.js';
+import { compactSvg, normalizeColor, stripWrapper, toCurrentColor } from '../svg.js';
+import {
+  block,
   serializeComponents,
   serializeContext,
+  serializeLint,
   serializeMatches,
   serializeNodes,
+  paintText,
+  serializePlan,
+  serializeStats,
   serializeStyles,
   serializeTextItems,
   serializeVariables,
@@ -42,13 +63,20 @@ export const OUTPUT_LEGEND = `
 输出是 YAML。节点的字段（无意义时一律省略）：
   type / name / id      节点类型、图层名、节点 id，id 可直接传给其它命令
   size: [w, h]          宽高；pos: [x, y] 仅在非 Auto Layout 流内出现
+  abs: [x, y]           **相对本次根节点**的绝对坐标，别再逐层累加 pos
   layout: {mode, gap, padding, justify, align}   自身的 Auto Layout
   sizing: {w, h}        作为子元素的尺寸行为，fill / hug / fixed
   fill / color / stroke / effect / radius / font   外观
+  font: {size: 16/21, weight: 500}   字号/行高 与字重，行高已解析成像素
   component: {of, props}   实例指向的主组件与属性覆盖
   bind: {...}           节点属性绑定到变量（width、itemSpacing…）
-  more: true            还有子节点没展开，用这一行的 id 单独取树即可
+  more: true + descendants: N   还有 N 个后代没展开；看这个数决定要不要下钻
   children              子节点，同样的结构
+三种折叠（原始 id 都还在，可以直接拿去 export / node）：
+  {type: Icon, ...}          原子图标，矢量几何已省。要看细节加 --expand-icons
+  {type: SystemChrome, ...}  状态栏这类系统组件，**不要逐节点还原，整体切图**
+  {sameAs: <id>, diff: {...}}  和前面那个节点结构相同，只列差异。
+                             出现它就说明代码里应该是同一个组件的多次复用
 值里的两个记号：
   $name   绑定的**变量**(variable)，生成代码时应映射为 design token
   @name   绑定的**样式**(style)，同样是设计系统引用
@@ -123,6 +151,65 @@ const docIdArg = {
 
 function ok(text: string): ToolResult {
   return { text };
+}
+
+/**
+ * 折叠开关。三条都默认开着 —— 折叠是有损的，但它损掉的正是零使用率的那部分。
+ * 真要看原样，每条都有对应的关闭开关。
+ */
+const foldArgs = {
+  expandIcons: z
+    .boolean()
+    .optional()
+    .describe('展开图标内部的矢量几何。默认折叠成 type: Icon 一行'),
+  expandSystem: z
+    .boolean()
+    .optional()
+    .describe('展开状态栏 / Home Indicator 这类系统组件。默认折叠成一行'),
+  dedupe: z
+    .boolean()
+    .optional()
+    .describe('折叠结构同构的相邻兄弟为 sameAs，默认开；--no-dedupe 关闭'),
+  dedupeScope: z
+    .enum(['siblings', 'document'])
+    .optional()
+    .describe('折叠范围：siblings 只看同父兄弟（默认），document 跨父去重'),
+  iconMaxSize: z.number().int().min(8).max(256).optional().describe('图标判定的尺寸上限，默认 64'),
+};
+
+/**
+ * 用户可扩展的系统组件名单。
+ *
+ * 各家设计系统给状态栏起的名字不一样，写死一份名单迟早不够用，
+ * 但也不该为了加一个名字就改代码。
+ */
+interface UserConfig {
+  systemComponents?: string[];
+}
+
+let userConfig: UserConfig | undefined;
+
+function loadUserConfig(): UserConfig {
+  if (userConfig) return userConfig;
+  try {
+    const path = join(homedir(), STATE_DIR, 'config.json');
+    userConfig = existsSync(path) ? (JSON.parse(readFileSync(path, 'utf8')) as UserConfig) : {};
+  } catch (err) {
+    log.warn('读取 config.json 失败，忽略:', String(err));
+    userConfig = {};
+  }
+  return userConfig;
+}
+
+function foldOptions(args: Record<string, unknown>): FoldOptions {
+  return {
+    icons: args.expandIcons === true ? false : true,
+    system: args.expandSystem === true ? false : true,
+    dedupe: args.dedupe !== false,
+    dedupeScope: (args.dedupeScope as 'siblings' | 'document' | undefined) ?? 'siblings',
+    iconMaxSize: (args.iconMaxSize as number | undefined) ?? 64,
+    isSystem: systemChromeMatcher(loadUserConfig().systemComponents ?? []),
+  };
 }
 
 /**
@@ -253,7 +340,7 @@ export function createTools(ctx: ToolContext): ToolDef[] {
           const { result } = await hub.request(target, Method.DocContext, {
             expandSelection: Boolean(expandSelection),
           });
-          return ok(serializeContext(result, { detail: 'compact' }));
+          return ok(serializeContext(result, { detail: 'compact', fold: foldOptions({}) }));
         }),
     },
 
@@ -263,15 +350,21 @@ export function createTools(ctx: ToolContext): ToolDef[] {
       title: '读取节点结构树',
       description:
         '按层级读取设计稿结构，是「设计稿转代码」的主力命令。\n' +
-        '不传 rootId 时读取当前选中项；没有选中项时读取当前页。\n' +
-        'depth 默认 2，深层节点只给 id/name/type 并标注还有多少子节点，' +
-        '需要时再指定 rootId 继续下钻 —— 不要一次性拉很深，会把上下文撑爆。\n' +
-        '组件实例的内部结构默认不展开（那是设计系统的实现细节，展开会吃掉' +
-        '绝大部分节点预算）；实例名 + props 通常就够了，要文案用 text 命令。\n\n' +
+        '不传 rootId 时读取当前选中项；没有选中项时读取当前页。可以给多个 rootId ' +
+        '一次取多棵树。\n' +
+        'depth 默认 2，深层节点只给 id/name/type 并标注 more + descendants（后代总数）——' +
+        '看 descendants 决定要不要展开，别一上来就 depth 8。\n' +
+        '组件实例的内部结构默认不展开；实例名 + props 通常就够了，要文案用 text 命令。\n' +
+        '图标、系统状态栏、重复的兄弟节点都会自动折叠（见 --expand-icons / ' +
+        '--expand-system / --no-dedupe）。\n\n' +
         OUTPUT_LEGEND,
       schema: {
         ...docIdArg,
         rootId: z.string().optional().describe('起始节点 id，省略则用当前选中项'),
+        rootIds: z
+          .array(z.string())
+          .optional()
+          .describe('一次取多棵树，逗号分隔或多个位置参数；给了就忽略 --root-id'),
         depth: z.number().int().min(0).max(20).optional().describe('展开层数，默认 2'),
         includeHidden: z.boolean().optional().describe('包含隐藏图层'),
         expandInstances: z
@@ -279,27 +372,51 @@ export function createTools(ctx: ToolContext): ToolDef[] {
           .optional()
           .describe('展开组件实例内部。rootId 直接指向实例时总是展开'),
         maxNodes: z.number().int().min(1).max(3000).optional().describe('节点数上限，默认 400'),
+        abs: z
+          .boolean()
+          .optional()
+          .describe('每个节点带 abs 绝对坐标（相对本次根节点），默认开；--no-abs 关闭'),
+        stat: z
+          .boolean()
+          .optional()
+          .describe('只出结构规模统计（每个直接子节点一行），用来判断该不该展开'),
+        ...foldArgs,
       },
-      positional: ['rootId'],
+      positional: ['rootIds'],
+      variadic: true,
       run: async (args) =>
         guard(async () => {
           const target = router.resolve(args.docId as string | undefined);
           const { result } = await hub.request(target, Method.NodeTree, {
             rootId: args.rootId as string | undefined,
+            rootIds: args.rootIds as string[] | undefined,
             depth: args.depth as number | undefined,
             includeHidden: args.includeHidden as boolean | undefined,
             expandInstances: args.expandInstances as boolean | undefined,
             maxNodes: args.maxNodes as number | undefined,
+            abs: args.abs as boolean | undefined,
+            stat: args.stat as boolean | undefined,
           });
-          const body = serializeNodes(result.roots, { detail: 'compact' });
+
+          if (result.stats) return ok(serializeStats(result.stats));
+
+          const body = serializeNodes(result.roots, {
+            detail: 'compact',
+            fold: foldOptions(args),
+          });
+          // 坐标系原点必须写明，否则 abs 是相对谁的就成了新的歧义
+          const origin = result.origin
+            ? note(`abs 坐标原点：${result.origin.id}（${result.origin.name}）左上角`)
+            : '';
           return ok(
-            result.truncated
-              ? body +
-                  note(
+            body +
+              origin +
+              (result.truncated
+                ? note(
                     `已达节点上限 ${result.nodeCount}，输出被截断。` +
                       '缩小 depth，或对具体子节点单独取树',
                   )
-              : body,
+                : ''),
           );
         }),
     },
@@ -360,7 +477,11 @@ export function createTools(ctx: ToolContext): ToolDef[] {
             ids: args.ids as string[],
             withChildren: args.withChildren as boolean | undefined,
           });
-          const body = serializeNodes(result.nodes, { detail: 'full' });
+          // 精读命令不折叠：使用者点名要看这几个节点，把图标折成一行就本末倒置了
+          const body = serializeNodes(result.nodes, {
+            detail: 'full',
+            fold: { icons: false, system: false, dedupe: false },
+          });
           return ok(
             result.missing?.length
               ? body + note(`找不到这些 id：${result.missing.join(', ')}`)
@@ -469,7 +590,10 @@ export function createTools(ctx: ToolContext): ToolDef[] {
         '典型用法：\n' +
         '  export 12:34 --format SVG --out ./src/assets/icons\n' +
         '  export 12:34 --format PNG --scales 1,2,3 --out ./assets\n' +
-        '  export 8:12 --recursive --out ./assets   # 一个 Frame 下配了导出设置的图标全切出来',
+        '  export 8:12 --recursive --out ./assets   # 一个 Frame 下配了导出设置的图标全切出来\n' +
+        '  export "I1:28;64:2356" --format SVG --stdout --currentcolor   # 直接拿到可内联的 SVG\n' +
+        '文件名取图层名；实例内部节点的图层名多半没意义（Vector / Frame 123），' +
+        '这时自动回退到**主组件名**。',
       schema: {
         ...docIdArg,
         ids: z.array(z.string()).min(1).describe('要导出的节点 id，可给多个'),
@@ -499,6 +623,22 @@ export function createTools(ctx: ToolContext): ToolDef[] {
           .describe('SVG 文字转曲，默认 true。要在代码里改文案就 --no-svg-outline-text'),
         svgIdAttribute: z.boolean().optional().describe('SVG 图层带 id 属性，便于 CSS 命中'),
         svgSimplifyStroke: z.boolean().optional().describe('SVG 简化描边，默认 true'),
+        stdout: z
+          .boolean()
+          .optional()
+          .describe('不落盘，直接把 SVG 源码打到 stdout —— 要内联进 HTML 时省一次 cat'),
+        currentcolor: z
+          .boolean()
+          .optional()
+          .describe('把绑了 token 的 fill/stroke 换成 currentColor（裸色值保持原样）'),
+        svgWrapper: z
+          .boolean()
+          .optional()
+          .describe('保留 <svg> 外壳，默认 true；--no-svg-wrapper 只吐内部节点'),
+        asciiNames: z
+          .boolean()
+          .optional()
+          .describe('文件名只保留 ASCII，非 ASCII 名回退到节点 id'),
       },
       positional: ['ids'],
       variadic: true,
@@ -529,8 +669,10 @@ export function createTools(ctx: ToolContext): ToolDef[] {
             );
           }
 
+          const toStdout = args.stdout === true;
           const dir = outputDir(args.out as string | undefined);
           const files: Entry[][] = [];
+          const inlined: Entry[][] = [];
           const failed: string[] = [];
           const used = new Set<string>();
           let total = 0;
@@ -562,7 +704,23 @@ export function createTools(ctx: ToolContext): ToolDef[] {
               }
 
               const exported = result as NodeExportResult;
-              const path = writeAsset(dir, assetName(item, spec, exported, used), data);
+
+              if (toStdout) {
+                if (exported.format !== 'SVG') {
+                  failed.push(`${item.name}：--stdout 只支持 SVG，位图请用 --out`);
+                  continue;
+                }
+                total++;
+                bytes += data.byteLength;
+                inlined.push(inlineEntry(item, data, args));
+                continue;
+              }
+
+              const path = writeAsset(
+                dir,
+                assetName(item, spec, exported, used, args.asciiNames === true),
+                data,
+              );
               if (!path) {
                 failed.push(`${item.name} (${spec.format})：落盘失败`);
                 continue;
@@ -579,18 +737,215 @@ export function createTools(ctx: ToolContext): ToolDef[] {
             }
           }
 
-          const summary: Entry[] = [
-            ['out', dir],
-            ['count', total],
-            ['kb', Math.round((bytes / 1024) * 10) / 10],
-            ['files', files],
-          ];
+          const summary: Entry[] = toStdout
+            ? [
+                ['count', total],
+                ['assets', inlined],
+              ]
+            : [
+                ['out', dir],
+                ['count', total],
+                ['kb', Math.round((bytes / 1024) * 10) / 10],
+                ['files', files],
+              ];
           if (failed.length > 0) summary.push(['failed', failed]);
           if (planned.missing?.length) summary.push(['missing', planned.missing]);
           if (planned.truncated) summary.push(['truncated', '清点结果被截断，建议缩小范围']);
 
           const text = yamlOf(summary);
           return total === 0 ? failure(text) : ok(text);
+        }),
+    },
+
+    // ---------------------------------------------------------- 一站式调研
+    {
+      name: 'plan_page',
+      cli: 'plan',
+      title: '还原前的一站式调研',
+      description:
+        '**还原一个页面就从这条命令开始。**\n' +
+        '一次返回开工前需要的全部信息：目标信息、深度可控的结构骨架、组件复用清单、' +
+        '这个子树实际用到的颜色/文字 token 与间距刻度、可直接切图的资源清单、' +
+        '全部文案、以及走查发现（error/warn）。\n' +
+        '相当于 ctx + tree + vars + styles + text + components + lint 一次问完，' +
+        '而且各段都已经应用了图标 / 系统组件 / 同构兄弟的折叠。\n' +
+        '输出目标 150 行以内，超了会自动降 structure 的深度并在 note 里说明。\n' +
+        '只要其中几段就用 --only tokens,assets。',
+      schema: {
+        ...docIdArg,
+        rootId: z.string().optional().describe('目标节点，省略则用当前选中项'),
+        depth: z.number().int().min(1).max(8).optional().describe('structure 段的层数，默认 3'),
+        only: z
+          .array(z.enum(PLAN_SECTIONS))
+          .optional()
+          .describe(`只要这几段：${PLAN_SECTIONS.join(',')}`),
+        maxNodes: z.number().int().min(1).max(3000).optional().describe('扫描节点上限，默认 2000'),
+        ...foldArgs,
+      },
+      positional: ['rootId'],
+      run: async (args) =>
+        guard(async () => {
+          const target = router.resolve(args.docId as string | undefined);
+          const fold = foldOptions(args);
+          const sections = (args.only as PlanSection[] | undefined) ?? [...PLAN_SECTIONS];
+
+          // 一棵深树同时喂给六段聚合。它本身不进上下文 —— 只有聚合结果进
+          const { result: tree } = await hub.request(target, Method.NodeTree, {
+            rootId: args.rootId as string | undefined,
+            depth: 20,
+            maxNodes: (args.maxNodes as number | undefined) ?? 2000,
+            detail: 'full',
+            expandInstances: true,
+          });
+          const root = tree.roots[0];
+          if (!root) return failure('没有可调研的节点。先选中一个 Frame，或给出 --root-id');
+
+          const [{ result: vars }, { result: styles }] = await Promise.all([
+            hub.request(target, Method.DsVariables, { usedBy: root.id }),
+            hub.request(target, Method.DsStyles, { usedBy: root.id }),
+          ]);
+
+          const lintCtx = lintContextOf(vars.collections, fold.isSystem);
+          const findings = lintTree(tree.roots, lintCtx).filter((f) => f.level !== 'info');
+
+          const modes = [
+            ...new Set(vars.collections.flatMap((c) => c.modes.map((m) => m.name))),
+          ];
+          const colors = vars.collections
+            .flatMap((c) => c.variables ?? [])
+            .filter((v) => v.type === 'COLOR')
+            .map((v) => ({
+              name: v.name,
+              uses: v.uses,
+              values: Object.entries(v.valuesByMode).map(
+                ([mode, value]) =>
+                  [
+                    mode,
+                    value.kind === 'alias' ? `→$${value.name}` : String(value.value),
+                  ] as [string, string],
+              ),
+            }));
+
+          const shared = {
+            root,
+            components: collectComponentUses(tree.roots),
+            modes,
+            colors,
+            textStyles: collectTextStyles(styles.styles),
+            spacing: collectSpacing(tree.roots, vars.collections),
+            assets: collectAssets(tree.roots, fold, paintText),
+            texts: collectTexts(tree.roots),
+            findings,
+            sections,
+          };
+
+          // structure 是唯一会随页面复杂度爆掉的一段，超预算就降它的深度
+          let depth = (args.depth as number | undefined) ?? 3;
+          let body = '';
+          let trimmed = false;
+          for (;;) {
+            body = serializePlan({
+              ...shared,
+              opts: { detail: 'compact', fold },
+              structure: (root.children ?? []).map((child) => pruneTree(child, depth - 1, fold)),
+            });
+            if (body.split('\n').length <= LINE_BUDGET || depth <= 1) break;
+            depth--;
+            trimmed = true;
+          }
+
+          return ok(
+            body +
+              (trimmed ? note(`structure 超出行数预算，已降到 depth ${depth}`) : '') +
+              (tree.truncated ? note('子树超过扫描上限，聚合结果可能不全，加 --max-nodes') : ''),
+          );
+        }),
+    },
+
+    // ---------------------------------------------------------- 走查与翻译
+    {
+      name: 'lint_design',
+      cli: 'lint',
+      title: '设计走查',
+      description:
+        '按规则扫一个子树，报告设计稿里的问题：未绑 token 的裸色值（含描边）、' +
+        '未绑样式的裸字号、被 detach 的实例、被拖改尺寸的实例、不在刻度表里的间距、' +
+        '超出裁剪容器的内容、图层名与文案不符、值重复的 token。\n' +
+        '每条给出 level / rule / 节点 id / 可读层级路径 / fix 建议。\n' +
+        '**只报告，不修改** —— 改不改是设计侧的决定，代码侧照着改只会让两边更不一致。\n' +
+        '文件里存在 Dark mode 时，裸色值会从 warn 升级为 error：它在暗色下一定出错。',
+      schema: {
+        ...docIdArg,
+        rootId: z.string().optional().describe('走查范围，省略则用当前选中项'),
+        level: z
+          .enum(['error', 'warn', 'info'])
+          .optional()
+          .describe('最低报告级别，默认 info（全报）'),
+        expandInstances: z.boolean().optional().describe('连实例内部一起查，默认只查页面自身的图层'),
+        maxNodes: z.number().int().min(1).max(3000).optional().describe('扫描节点上限，默认 2000'),
+      },
+      positional: ['rootId'],
+      run: async (args) =>
+        guard(async () => {
+          const target = router.resolve(args.docId as string | undefined);
+          const fold = foldOptions(args);
+          const { result: tree } = await hub.request(target, Method.NodeTree, {
+            rootId: args.rootId as string | undefined,
+            depth: 20,
+            maxNodes: (args.maxNodes as number | undefined) ?? 2000,
+            detail: 'full',
+            expandInstances: args.expandInstances as boolean | undefined,
+          });
+          const { result: vars } = await hub.request(target, Method.DsVariables, {
+            usedBy: tree.roots[0]?.id,
+          });
+
+          const ctx = lintContextOf(vars.collections, fold.isSystem);
+          const wanted = (args.level as LintLevel | undefined) ?? 'info';
+          const rank: Record<LintLevel, number> = { error: 0, warn: 1, info: 2 };
+          const findings = lintTree(tree.roots, ctx).filter((f) => rank[f.level] <= rank[wanted]);
+
+          return ok(serializeLint(findings, ctx.darkMode));
+        }),
+    },
+
+    {
+      name: 'get_node_css',
+      cli: 'css',
+      title: '把布局机械翻译成 CSS',
+      description:
+        'Auto Layout → flex 的确定性翻译：方向、对齐、gap、padding、' +
+        'fill/hug 在主轴与交叉轴上的不同落点、圆角、描边、阴影、排版。\n' +
+        '绑了变量的属性输出 `var(--slug)` 并在注释里保留原 token 名 —— ' +
+        '**不输出字面值兜底**，那等于给了一条硬编码的路。\n' +
+        'hug 尺寸输出成注释：那个数字是内容撑出来的结果，写死就锁死了。\n' +
+        '只生成 CSS，不生成 HTML、不猜组件名、不做断点推断。',
+      schema: {
+        ...docIdArg,
+        id: z.string().describe('节点 id'),
+        nested: z.boolean().optional().describe('连子树一起出，生成 BEM 风格的类名'),
+        varPrefix: z.string().optional().describe('CSS 变量前缀，默认 --'),
+        depth: z.number().int().min(0).max(10).optional().describe('nested 时的层数，默认 3'),
+      },
+      positional: ['id'],
+      run: async (args) =>
+        guard(async () => {
+          const target = router.resolve(args.docId as string | undefined);
+          const nested = args.nested === true;
+          const { result } = await hub.request(target, Method.NodeTree, {
+            rootId: args.id as string,
+            depth: nested ? ((args.depth as number | undefined) ?? 3) : 0,
+            detail: 'full',
+          });
+          const root = result.roots[0];
+          if (!root) return failure(`找不到节点 ${String(args.id)}`);
+
+          return ok(
+            cssRules(root, {
+              varPrefix: (args.varPrefix as string | undefined) ?? DEFAULT_CSS.varPrefix,
+              nested,
+            }),
+          );
         }),
     },
 
@@ -605,7 +960,10 @@ export function createTools(ctx: ToolContext): ToolDef[] {
         '（集合名 / 变量名 / 类型）—— 那是 teamLibrary API 的上限。\n' +
         '要 Library 变量的具体值就加 values：会逐个 import 变量，几百个变量会明显变慢，' +
         '所以默认关闭。设计稿里的 $name 靠清单就能对上号，多数时候不需要值。\n' +
-        '输出中 `→$other` 表示该变量别名指向另一个变量。',
+        '输出中 `→$other` 表示该变量别名指向另一个变量。\n' +
+        '**还原某一个 Frame 时优先用 `--used-by <id>`** —— 直接给出那个子树用到的' +
+        '那几个 token（含引用次数），不用先读树再回来 grep。\n' +
+        '同名集合会自动合并去重，mode 取并集并在 note 里说明。',
       schema: {
         ...docIdArg,
         collectionId: z.string().optional().describe('只导出某个集合（本地集合的 id）'),
@@ -620,6 +978,13 @@ export function createTools(ctx: ToolContext): ToolDef[] {
           .boolean()
           .optional()
           .describe('扫当前页，从实际引用到的变量反查它所属的集合，默认 true'),
+        usedBy: z
+          .string()
+          .optional()
+          .describe(
+            '只列这个子树实际引用到的变量，并给出每个变量的引用次数（uses）。' +
+              '还原某个 Frame 时用它 —— 输出通常十几行，可以整份进上下文，不用落盘 grep',
+          ),
       },
       run: async (args) =>
         guard(async () => {
@@ -631,6 +996,7 @@ export function createTools(ctx: ToolContext): ToolDef[] {
             library: args.library as boolean | undefined,
             values: args.values as boolean | undefined,
             scan: args.scan as boolean | undefined,
+            usedBy: args.usedBy as string | undefined,
           });
           let body = serializeVariables(result.collections);
           if (result.truncated) body += note('变量数量超过上限，已截断');
@@ -670,6 +1036,10 @@ export function createTools(ctx: ToolContext): ToolDef[] {
           .boolean()
           .optional()
           .describe('扫当前页，反查实际引用到的远端样式定义，默认 true'),
+        usedBy: z
+          .string()
+          .optional()
+          .describe('只列这个子树实际引用到的样式，并给出引用次数（uses）'),
       },
       run: async (args) =>
         guard(async () => {
@@ -678,6 +1048,7 @@ export function createTools(ctx: ToolContext): ToolDef[] {
             type: args.type as 'PAINT' | 'TEXT' | 'EFFECT' | 'GRID' | undefined,
             limit: args.limit as number | undefined,
             scan: args.scan as boolean | undefined,
+            usedBy: args.usedBy as string | undefined,
           });
           let body = serializeStyles(result.styles);
           if (result.truncated) body += note('样式数量超过上限，已截断');
@@ -766,8 +1137,26 @@ function assetName(
   spec: ExportSpec,
   exported: NodeExportResult,
   used: Set<string>,
+  ascii: boolean,
 ): string {
-  const base = sanitizeName(target.name) || sanitizeName(target.id) || 'asset';
+  // 实例内部节点（id 形如 "I1:28;64:2356"）的图层名基本是 "Vector" /
+  // "Frame 2147223744"，sanitize 之后常常只剩个位数字 —— `2.svg` / `11064.svg`
+  // 进不了项目。这类一律回退到主组件名，那才是设计师给这个图标起的名字
+  const insideInstance = target.id.includes(';');
+  const candidates =
+    insideInstance && target.component
+      ? [target.component, target.name, target.id]
+      : [target.name, target.component, target.id];
+  let base = '';
+  for (const candidate of candidates) {
+    const cleaned = sanitizeName(candidate ?? '', ascii);
+    if (cleaned && !/^\d+$/.test(cleaned)) {
+      base = cleaned;
+      break;
+    }
+  }
+  if (!base) base = sanitizeName(target.id, true) || 'asset';
+
   const scale = spec.scale ?? exported.scale;
   const suffix = spec.suffix ?? (scale && scale !== 1 ? `@${trimNumber(scale)}x` : '');
   const ext = EXTENSION[exported.format];
@@ -781,15 +1170,63 @@ function assetName(
   return name;
 }
 
-/** 图层名直接当文件名不安全：可能有斜杠、空格、emoji、以及 Icon/Search 这种路径式命名。 */
-function sanitizeName(name: string): string {
+/**
+ * 图层名直接当文件名不安全：可能有斜杠、空格、emoji、以及 Icon/Search 这种路径式命名。
+ *
+ * 但**不能**把非 ASCII 一律删掉 —— `\w` 不含中文，`文件2` 会被削成 `2`，
+ * 于是产出 `2.svg`。默认保留 Unicode 字母数字，要纯 ASCII 就显式 --ascii-names。
+ */
+function sanitizeName(name: string, ascii: boolean): string {
+  const keep = ascii ? /[^\w.@-]/g : /[^\p{L}\p{N}._@-]/gu;
   return name
     .trim()
     .replace(/[\/\\]+/g, '-')
     .replace(/\s+/g, '-')
-    .replace(/[^\w.@-]/g, '')
+    .replace(keep, '')
     .replace(/-{2,}/g, '-')
     .replace(/^[-.]+|[-.]+$/g, '');
+}
+
+/**
+ * `--stdout` 的一条：id + 名字 + 该给容器设哪个 token + 可直接内联的 SVG。
+ *
+ * 存在的理由是「导出 10 个图标 → 再 cat 一遍」这一步纯属浪费：SVG 内容
+ * 反正要进上下文，多一次往返和一堆临时文件没有换来任何东西。
+ */
+function inlineEntry(
+  target: ExportTarget,
+  data: Buffer,
+  args: Record<string, unknown>,
+): Entry[] {
+  let svg = compactSvg(data.toString('utf8'));
+  const entry: Entry[] = [
+    ['id', target.id],
+    ['name', target.component ?? target.name],
+  ];
+
+  const bound = (target.paints ?? []).filter((p) => p.token);
+  const unbound: string[] = [];
+
+  if (args.currentcolor === true) {
+    const tokenColors = new Set(
+      bound.map((p) => normalizeColor(p.color)).filter((c): c is string => c !== undefined),
+    );
+    const result = toCurrentColor(svg, tokenColors);
+    svg = result.svg;
+    unbound.push(...result.unbound);
+  }
+
+  // 换成 currentColor 之后，使用者需要知道该给容器设哪个 CSS 变量
+  const tokens = [...new Set(bound.map((p) => `$${p.token!}`))];
+  if (tokens.length === 1) entry.push(['token', tokens[0]!]);
+  else if (tokens.length > 1) entry.push(['tokens', tokens]);
+  if (unbound.length > 0) {
+    entry.push(['warn', `unbound-color: ${unbound.join(' ')}`]);
+  }
+
+  if (args.svgWrapper === false) svg = stripWrapper(svg);
+  entry.push(['svg', block(svg)]);
+  return entry;
 }
 
 function trimNumber(n: number): string {

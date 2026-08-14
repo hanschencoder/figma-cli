@@ -9,6 +9,7 @@ import {
   ErrorCode,
   MAX_IMAGE_DIMENSION,
   Method,
+  systemChromeMatcher,
   type DocContextParams,
   type DocContextResult,
   type DsComponentsParams,
@@ -33,14 +34,15 @@ import {
   type NodeSearchResult,
   type NodeTextParams,
   type NodeTextResult,
+  type NodeStat,
   type NodeTreeParams,
   type NodeTreeResult,
   type ProtocolError,
   type TextItem,
 } from '@figma-mcp/shared';
-import { ResolveCache } from './collect/common.js';
+import { ResolveCache, mapPaints } from './collect/common.js';
 import { collectComponents, collectStyles, collectVariables } from './collect/ds.js';
-import { collectNode, type CollectOptions } from './collect/node.js';
+import { absoluteXY, collectNode, collectStats, type CollectOptions } from './collect/node.js';
 
 const DEFAULT_TREE_DEPTH = 2;
 const DEFAULT_MAX_NODES = 400;
@@ -140,22 +142,40 @@ async function docContext(params: DocContextParams): Promise<DocContextResult> {
 async function nodeTree(params: NodeTreeParams): Promise<NodeTreeResult> {
   const depth = params?.depth ?? DEFAULT_TREE_DEPTH;
   const maxNodes = params?.maxNodes ?? DEFAULT_MAX_NODES;
-  const cache = new ResolveCache();
-  const opts = options({
-    detail: 'compact',
-    depth,
-    maxNodes,
-    includeHidden: params?.includeHidden ?? false,
-    expandInstances: params?.expandInstances ?? false,
-  });
+  const includeHidden = params?.includeHidden ?? false;
 
   const roots: BaseNode[] = [];
-  if (params?.rootId) {
-    roots.push(await requireNode(params.rootId));
+  const ids = params?.rootIds?.length ? params.rootIds : params?.rootId ? [params.rootId] : [];
+  if (ids.length > 0) {
+    for (const id of ids) roots.push(await requireNode(id));
   } else if (figma.currentPage.selection.length > 0) {
     roots.push(...figma.currentPage.selection);
   } else {
     roots.push(figma.currentPage);
+  }
+
+  // --stat 不进采集流程：它的全部意义就是「不把内容读进来也能判断规模」
+  if (params?.stat) {
+    const stats: NodeStat[] = [];
+    const isSystem = systemChromeMatcher();
+    for (const root of roots) stats.push(...collectStats(root, includeHidden, isSystem));
+    return { roots: [], nodeCount: 0, stats, origin: originOf(roots[0]) };
+  }
+
+  const cache = new ResolveCache();
+  const opts = options({
+    detail: params?.detail ?? 'compact',
+    depth,
+    maxNodes,
+    includeHidden,
+    expandInstances: params?.expandInstances ?? false,
+  });
+
+  // 多个 root 共用第一个 root 的原点：三个区块各自为原点的话，
+  // 区块之间的相对位置就又要手算了
+  if (params?.abs !== false) {
+    const xy = absoluteXY(roots[0]!);
+    if (xy) opts.origin = { x: xy[0], y: xy[1] };
   }
 
   const out: NodeInfo[] = [];
@@ -167,7 +187,12 @@ async function nodeTree(params: NodeTreeParams): Promise<NodeTreeResult> {
   const nodeCount = maxNodes - opts.budget.remaining;
   const result: NodeTreeResult = { roots: out, nodeCount };
   if (opts.budget.remaining <= 0) result.truncated = true;
+  if (opts.origin) result.origin = originOf(roots[0]);
   return result;
+}
+
+function originOf(node: BaseNode | undefined): { id: string; name: string } | undefined {
+  return node ? { id: node.id, name: node.name } : undefined;
 }
 
 async function nodeDetail(params: NodeDetailParams): Promise<NodeDetailResult> {
@@ -322,11 +347,11 @@ function toExportSpec(setting: ExportSettings, width: number, height: number): E
   return spec;
 }
 
-function exportTargetOf(node: SceneNode): ExportTarget {
+async function exportTargetOf(node: SceneNode, cache: ResolveCache): Promise<ExportTarget> {
   const width = 'width' in node ? node.width : 0;
   const height = 'height' in node ? node.height : 0;
   const settings = 'exportSettings' in node ? node.exportSettings : [];
-  return {
+  const target: ExportTarget = {
     id: node.id,
     name: node.name,
     type: node.type,
@@ -334,6 +359,86 @@ function exportTargetOf(node: SceneNode): ExportTarget {
     height: Math.round(height * 100) / 100,
     settings: settings.map((setting) => toExportSpec(setting, width, height)),
   };
+
+  const component = await nearestComponentName(node);
+  if (component) target.component = component;
+
+  const paints = await subtreePaints(node, cache);
+  if (paints.length > 0) target.paints = paints;
+
+  return target;
+}
+
+/**
+ * 自身或最近的实例祖先对应的主组件名。
+ *
+ * 实例内部节点的图层名基本没用（"Vector"、"Frame 2147223744"），拿它当文件名
+ * 产出的是 `2.svg` 这种进不了项目的东西。主组件名才是设计师给这个图标起的名字。
+ */
+async function nearestComponentName(node: SceneNode): Promise<string | undefined> {
+  let current: BaseNode | null = node;
+  while (current) {
+    if (current.type === 'INSTANCE') {
+      try {
+        const main = await (current as InstanceNode).getMainComponentAsync();
+        if (main) {
+          return main.parent?.type === 'COMPONENT_SET' ? main.parent.name : main.name;
+        }
+      } catch {
+        // 主组件在未加载的远端库里，退回去看更外层的实例
+      }
+    }
+    if (current.type === 'COMPONENT') return current.name;
+    current = current.parent;
+  }
+  return undefined;
+}
+
+/** 一个图标子树里出现的纯色，最多看这么多节点。 */
+const PAINT_SCAN_LIMIT = 200;
+
+/**
+ * 子树里用到的纯色填充/描边，按色值去重。
+ *
+ * `--currentcolor` 靠它区分「绑了 token 的色值」（可以安全换成 currentColor，
+ * 由容器的 CSS 变量决定）和「裸色值」（可能是有意的多色图标，动不得）。
+ */
+async function subtreePaints(
+  node: SceneNode,
+  cache: ResolveCache,
+): Promise<{ color: string; token?: string }[]> {
+  const byColor = new Map<string, { color: string; token?: string }>();
+  const queue: SceneNode[] = [node];
+  let seen = 0;
+
+  while (queue.length > 0 && seen < PAINT_SCAN_LIMIT) {
+    const current = queue.shift()!;
+    seen++;
+    for (const field of ['fills', 'strokes'] as const) {
+      if (!(field in current)) continue;
+      const bound = (current as { boundVariables?: Record<string, unknown> }).boundVariables;
+      const mapped = await mapPaints(
+        (current as unknown as Record<string, readonly Paint[]>)[field],
+        current,
+        cache,
+        bound?.[field] as VariableAlias[] | undefined,
+      );
+      for (const paint of mapped ?? []) {
+        if (paint.kind !== 'solid' || !paint.color || paint.visible === false) continue;
+        const existing = byColor.get(paint.color);
+        // 同一个色值在别处绑了 token 就以有 token 的那次为准
+        if (!existing || (existing.token === undefined && paint.token)) {
+          byColor.set(
+            paint.color,
+            paint.token ? { color: paint.color, token: paint.token.name } : { color: paint.color },
+          );
+        }
+      }
+    }
+    if ('children' in current) queue.push(...(current as ChildrenMixin).children);
+  }
+
+  return [...byColor.values()];
 }
 
 /** 配了导出设置的节点、以及切片节点，都是设计师明确标出来「这个要切」的。 */
@@ -352,16 +457,17 @@ async function nodeExportPlan(params: NodeExportPlanParams): Promise<NodeExportP
   const targets: ExportTarget[] = [];
   const missing: string[] = [];
   const seen = new Set<string>();
+  const cache = new ResolveCache();
   let truncated = false;
 
-  const push = (node: SceneNode): void => {
+  const push = async (node: SceneNode): Promise<void> => {
     if (seen.has(node.id)) return;
     if (targets.length >= limit) {
       truncated = true;
       return;
     }
     seen.add(node.id);
-    targets.push(exportTargetOf(node));
+    targets.push(await exportTargetOf(node, cache));
   };
 
   for (const id of ids) {
@@ -369,7 +475,7 @@ async function nodeExportPlan(params: NodeExportPlanParams): Promise<NodeExportP
     if (!node || !('type' in node) || node.type === 'PAGE' || node.type === 'DOCUMENT') {
       // 页面本身不是切图对象，但递归时它的子孙可能是
       if (params?.recursive && node && 'findAll' in node) {
-        for (const child of (node as PageNode).findAll(isExportMarked)) push(child);
+        for (const child of (node as PageNode).findAll(isExportMarked)) await push(child);
         continue;
       }
       missing.push(id);
@@ -379,12 +485,12 @@ async function nodeExportPlan(params: NodeExportPlanParams): Promise<NodeExportP
     const scene = node as SceneNode;
     if (params?.recursive && 'findAll' in scene) {
       // 根节点自己配了导出设置也要算上 —— findAll 不含自身
-      if (isExportMarked(scene)) push(scene);
-      for (const child of (scene as FrameNode).findAll(isExportMarked)) push(child);
+      if (isExportMarked(scene)) await push(scene);
+      for (const child of (scene as FrameNode).findAll(isExportMarked)) await push(child);
       // 一个都没标记时，退回到「就导这个节点本身」，避免静默返回空
-      if (targets.length === 0) push(scene);
+      if (targets.length === 0) await push(scene);
     } else {
-      push(scene);
+      await push(scene);
     }
   }
 
@@ -460,6 +566,7 @@ async function dsVariables(params: DsVariablesParams): Promise<DsVariablesResult
     library: params?.library,
     values: params?.values,
     scan: params?.scan,
+    usedBy: params?.usedBy,
   });
   const result: DsVariablesResult = { collections };
   if (truncated) result.truncated = true;
@@ -475,6 +582,7 @@ async function dsStyles(params: DsStylesParams): Promise<DsStylesResult> {
     type: params?.type,
     limit: params?.limit ?? DEFAULT_STYLE_LIMIT,
     scan: params?.scan,
+    usedBy: params?.usedBy,
   });
   const result: DsStylesResult = { styles };
   if (truncated) result.truncated = true;

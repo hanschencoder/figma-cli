@@ -16,6 +16,7 @@ import type {
   LayoutChildInfo,
   LayoutInfo,
   NodeInfo,
+  NodeStat,
   TextInfo,
   TextSegment,
 } from '@figma-mcp/shared';
@@ -45,6 +46,11 @@ export interface CollectOptions {
   expandInstances: boolean;
   /** 当前节点是否是本次请求的根。显式请求某个实例的树时应该能看进去 */
   atRoot: boolean;
+  /**
+   * abs 坐标的原点（本次请求根节点的绝对位置）。
+   * undefined 表示不输出 abs。
+   */
+  origin?: { x: number; y: number };
   /** 剩余可展开的层数 */
   depth: number;
   /** 整棵树的节点预算，防止大文件把 context 撑爆 */
@@ -63,7 +69,15 @@ export async function collectNode(
   if ('locked' in scene && scene.locked) info.locked = true;
 
   collectGeometry(scene, info);
+  if (opts.origin) {
+    const xy = absoluteXY(scene);
+    if (xy) info.abs = [num(xy[0] - opts.origin.x), num(xy[1] - opts.origin.y)];
+  }
   collectLayout(scene, info);
+  if (opts.atRoot) {
+    const mode = (node.parent as Partial<FrameNode> | null)?.layoutMode;
+    if (mode) info.parentLayoutMode = mode as NodeInfo['parentLayoutMode'];
+  }
   await collectAppearance(scene, info, cache, opts.detail);
   await collectText(scene, info, cache, opts.detail);
   await collectComponent(scene, info, opts.detail);
@@ -80,6 +94,21 @@ export async function collectNode(
 }
 
 // ---------------------------------------------------------------- 几何
+
+/**
+ * 节点左上角在画布坐标系里的位置。
+ *
+ * absoluteTransform 的平移分量就是它，而且不受 effect / 描边外扩影响 ——
+ * absoluteBoundingBox 会被旋转后的包围盒带偏，用来做「这一行在哪」的判断会错。
+ */
+export function absoluteXY(node: BaseNode): [number, number] | undefined {
+  const transform = (node as { absoluteTransform?: Transform }).absoluteTransform;
+  if (transform) return [transform[0][2], transform[1][2]];
+  const box = (node as { absoluteBoundingBox?: Rect | null }).absoluteBoundingBox;
+  if (box) return [box.x, box.y];
+  // PAGE / DOCUMENT 没有坐标，它们自己就是原点
+  return node.type === 'PAGE' || node.type === 'DOCUMENT' ? [0, 0] : undefined;
+}
 
 function collectGeometry(node: SceneNode, info: NodeInfo): void {
   if ('width' in node) {
@@ -294,8 +323,20 @@ async function collectText(
   if (text.fontSize === figma.mixed) mixed.push('fontSize');
   else out.fontSize = num(text.fontSize);
 
-  if (text.lineHeight === figma.mixed) mixed.push('lineHeight');
-  else out.lineHeight = formatLineHeight(text.lineHeight);
+  if (text.lineHeight === figma.mixed) {
+    mixed.push('lineHeight');
+  } else {
+    const raw = formatLineHeight(text.lineHeight);
+    // auto 对写 CSS 等于没给。单行文本的渲染高度**就是**行高，Figma 已经算好了，
+    // 没道理让下游拿 size 去反推 —— 那个反推只在特定条件下成立，错了也看不出来。
+    const measured = raw === 'auto' ? measuredLineHeight(text) : undefined;
+    if (measured !== undefined) {
+      out.lineHeight = `${measured}px`;
+      out.lineHeightAuto = true;
+    } else {
+      out.lineHeight = raw;
+    }
+  }
 
   if (text.letterSpacing === figma.mixed) mixed.push('letterSpacing');
   else out.letterSpacing = formatLetterSpacing(text.letterSpacing);
@@ -318,6 +359,24 @@ async function collectText(
   }
 
   info.text = out;
+}
+
+/**
+ * 单行文本的渲染高度即行高。
+ *
+ * 判定单行不能只看有没有换行符 —— 定宽文本会自动折行。但 auto 行高必定落在
+ * 1.0~1.5 倍字号之间，所以「高度 < 2 倍字号」就一定只有一行，两行至少 2.0 倍。
+ * 拿不准的一律返回 undefined，宁可输出 auto 也不给一个编出来的数。
+ */
+export function measuredLineHeight(text: TextNode): number | undefined {
+  if (text.textAutoResize !== 'HEIGHT' && text.textAutoResize !== 'WIDTH_AND_HEIGHT') {
+    return undefined;
+  }
+  if (text.characters.indexOf('\n') >= 0) return undefined;
+  if (text.fontSize === figma.mixed || typeof text.fontSize !== 'number') return undefined;
+  const height = text.height;
+  if (height <= 0 || height >= text.fontSize * 2) return undefined;
+  return num(height);
 }
 
 function formatLineHeight(lineHeight: LineHeight): string {
@@ -381,6 +440,11 @@ async function collectComponent(
         component.mainComponentName = main.name;
         if (main.remote) component.remote = true;
         if (main.key) component.key = main.key;
+        // 实例被拖改过尺寸是常见的设计事故，代码侧照着实例写就会和组件对不上。
+        // 只有 full 才带 —— compact 树上每个实例多两个数字不划算
+        if (detail === 'full' && 'width' in main) {
+          component.mainSize = [num(main.width), num(main.height)];
+        }
         if (main.parent?.type === 'COMPONENT_SET') {
           component.componentSetName = main.parent.name;
         }
@@ -468,6 +532,7 @@ async function collectChildren(
   const stopAtInstance = node.type === 'INSTANCE' && !opts.expandInstances && !opts.atRoot;
   if (stopAtInstance) {
     info.childCount = visible.length;
+    info.descendants = countDescendants(node, opts.includeHidden);
     info.truncated = true;
     info.truncatedBy = 'instance';
     return;
@@ -475,6 +540,7 @@ async function collectChildren(
 
   if (opts.depth <= 0) {
     info.childCount = visible.length;
+    info.descendants = countDescendants(node, opts.includeHidden);
     info.truncated = true;
     info.truncatedBy = 'depth';
     return;
@@ -484,6 +550,7 @@ async function collectChildren(
   for (const child of visible) {
     if (opts.budget.remaining <= 0) {
       info.childCount = visible.length;
+      info.descendants = countDescendants(node, opts.includeHidden);
       info.truncated = true;
       info.truncatedBy = 'budget';
       break;
@@ -498,6 +565,88 @@ async function collectChildren(
     );
   }
   if (out.length > 0) info.children = out;
+}
+
+// ---------------------------------------------------------------- 结构统计
+
+/** 单个节点最多数到这个数就报 `>=`，防止在整页上退化成全文档遍历。 */
+const DESCENDANT_CAP = 5000;
+
+/**
+ * 后代总数。
+ *
+ * 存在的理由是 `more: true` 一行无法预估展开成本 —— 只能保守地一层层试，
+ * 或者赌一把深度然后被几百行淹没。给个数字，这个选择就变成确定的。
+ */
+export function countDescendants(node: BaseNode, includeHidden: boolean): number {
+  let count = 0;
+  const walk = (current: BaseNode): void => {
+    if (count >= DESCENDANT_CAP || !('children' in current)) return;
+    for (const child of (current as ChildrenMixin).children) {
+      if (!includeHidden && 'visible' in child && !child.visible) continue;
+      count++;
+      if (count >= DESCENDANT_CAP) return;
+      walk(child);
+    }
+  };
+  walk(node);
+  return count;
+}
+
+/** 子树最大深度（根自身算 0）。 */
+function subtreeDepth(node: BaseNode, includeHidden: boolean, budget = { n: DESCENDANT_CAP }): number {
+  if (!('children' in node) || budget.n <= 0) return 0;
+  let max = 0;
+  for (const child of (node as ChildrenMixin).children) {
+    if (!includeHidden && 'visible' in child && !child.visible) continue;
+    budget.n--;
+    max = Math.max(max, 1 + subtreeDepth(child, includeHidden, budget));
+  }
+  return max;
+}
+
+/**
+ * `--stat`：每个直接子节点一行，只报规模。
+ * 输出行数恒等于直接子节点数，不随子树大小增长 —— 这正是它的用处。
+ */
+export function collectStats(
+  node: BaseNode,
+  includeHidden: boolean,
+  isSystemChrome: (name: string) => boolean,
+): NodeStat[] {
+  if (!('children' in node)) return [];
+  const out: NodeStat[] = [];
+  for (const child of (node as ChildrenMixin).children) {
+    if (!includeHidden && 'visible' in child && !child.visible) continue;
+    const stat: NodeStat = {
+      id: child.id,
+      name: child.name,
+      type: child.type,
+      descendants: countDescendants(child, includeHidden),
+      depth: subtreeDepth(child, includeHidden),
+    };
+    if (child.type === 'INSTANCE') stat.instance = true;
+    const chrome = countSystemChrome(child, isSystemChrome, includeHidden);
+    if (chrome > 0) stat.systemChrome = chrome;
+    out.push(stat);
+  }
+  return out;
+}
+
+function countSystemChrome(
+  node: BaseNode,
+  isSystemChrome: (name: string) => boolean,
+  includeHidden: boolean,
+  budget = { n: DESCENDANT_CAP },
+): number {
+  let count = isSystemChrome(node.name) ? 1 : 0;
+  if (!('children' in node) || budget.n <= 0) return count;
+  for (const child of (node as ChildrenMixin).children) {
+    if (!includeHidden && 'visible' in child && !child.visible) continue;
+    budget.n--;
+    count += countSystemChrome(child, isSystemChrome, includeHidden, budget);
+  }
+  return count;
 }
 
 // ---------------------------------------------------------------- 导出的小工具

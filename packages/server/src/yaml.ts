@@ -19,18 +19,65 @@ import type {
   EffectInfo,
   NodeInfo,
   NodeMatch,
+  NodeStat,
   PaintInfo,
   StyleInfo,
   TextInfo,
   TextItem,
   TokenRef,
   VariableCollectionInfo,
+  VariableInfo,
 } from '@figma-mcp/shared';
+import { lineHeightPx, parseFontStyle } from './font.js';
+import type { LintFinding } from './lint.js';
+import type {
+  AssetItem,
+  ComponentUse,
+  PlanSection,
+  SpacingSummary,
+  TextStyleSummary,
+} from './plan.js';
+import {
+  DEFAULT_FOLD,
+  diffColors,
+  diffNodes,
+  foldIcon,
+  foldSystem,
+  isEmptyDiff,
+  isSystemChrome,
+  structureHash,
+  type FoldOptions,
+  type IconFold,
+  type NodeDiff,
+} from './fold.js';
 
 export interface SerializeOptions {
   /** full 会带上 token 的解析值、stroke、effect 细节 */
   detail: 'compact' | 'full';
+  /** 结构折叠开关，省略时用默认（图标 / 系统 chrome / 同构兄弟全折叠） */
+  fold?: Partial<FoldOptions>;
 }
+
+/**
+ * 渲染上下文 = 序列化选项 + 折叠配置 + 跨父折叠的已见结构表。
+ * 继承 SerializeOptions，各个 format* 函数不用改签名。
+ */
+interface Ctx extends SerializeOptions {
+  fold: FoldOptions;
+  /** 结构哈希 → 已经完整输出过的那个节点 */
+  seen: Map<string, { node: NodeInfo; lines: number }>;
+}
+
+function contextOf(opts: SerializeOptions): Ctx {
+  return { ...opts, fold: { ...DEFAULT_FOLD, ...opts.fold }, seen: new Map() };
+}
+
+/**
+ * 低于这个行数不折叠。
+ *
+ * 为省两行引入一层 `sameAs` 间接，读的人要来回跳，不划算。
+ */
+const MIN_FOLD_LINES = 6;
 
 const TYPE_ALIAS: Record<string, string> = {
   FRAME: 'Frame',
@@ -55,7 +102,7 @@ const TYPE_ALIAS: Record<string, string> = {
 
 /** 有序的键值对。用数组而不是对象，因为字段顺序是可读性的一部分。 */
 export type Entry = [string, YamlValue];
-export type YamlValue = string | number | boolean | Flow | Entry[] | YamlValue[];
+export type YamlValue = string | number | boolean | Flow | Block | Entry[] | YamlValue[];
 
 /** 包一层表示「这个结构走 flow 风格」，如 `{mode: vertical, gap: 16}`。 */
 class Flow {
@@ -64,6 +111,18 @@ class Flow {
 
 function flow(value: Entry[] | YamlValue[]): Flow {
   return new Flow(value);
+}
+
+/**
+ * 字面量块（`|`）。SVG 源码这种「一整块文本、里面什么字符都可能有」的东西，
+ * 用引号转义会变成一行看不懂的反斜杠；块标量原样保留，还省掉转义字节。
+ */
+class Block {
+  constructor(readonly text: string) {}
+}
+
+export function block(text: string): Block {
+  return new Block(text);
 }
 
 function isEntries(value: unknown): value is Entry[] {
@@ -122,7 +181,8 @@ function needsQuote(text: string, inFlow: boolean): boolean {
 const AUTO_FLOW_MAX = 60;
 
 function autoFlow(value: YamlValue): string | undefined {
-  if (value instanceof Flow || !Array.isArray(value) || value.length === 0) return undefined;
+  if (value instanceof Flow || value instanceof Block) return undefined;
+  if (!Array.isArray(value) || value.length === 0) return undefined;
   if (isEntries(value)) return undefined;
   if (!(value as YamlValue[]).every((v) => typeof v !== 'object')) return undefined;
   const text = emitFlow(flow(value as YamlValue[]));
@@ -131,6 +191,12 @@ function autoFlow(value: YamlValue): string | undefined {
 
 function emit(value: YamlValue, indent: number, lines: string[]): void {
   const pad = '  '.repeat(indent);
+
+  if (value instanceof Block) {
+    lines.push(`${pad}|`);
+    emitBlockBody(value, indent + 1, lines);
+    return;
+  }
 
   if (value instanceof Flow) {
     lines.push(pad + emitFlow(value));
@@ -154,7 +220,10 @@ function emit(value: YamlValue, indent: number, lines: string[]): void {
       return;
     }
     for (const item of value as YamlValue[]) {
-      if (item instanceof Flow) {
+      if (item instanceof Block) {
+        lines.push(`${pad}- |`);
+        emitBlockBody(item, indent + 1, lines);
+      } else if (item instanceof Flow) {
         lines.push(`${pad}- ${emitFlow(item)}`);
       } else if (isEntries(item) || Array.isArray(item)) {
         const nested: string[] = [];
@@ -172,8 +241,19 @@ function emit(value: YamlValue, indent: number, lines: string[]): void {
   lines.push(pad + scalar(value, false));
 }
 
+function emitBlockBody(value: Block, indent: number, lines: string[]): void {
+  const pad = '  '.repeat(indent);
+  for (const line of value.text.replace(/\s+$/, '').split('\n')) lines.push(pad + line);
+}
+
 function emitEntry(key: string, value: YamlValue, indent: number, lines: string[]): void {
   const pad = '  '.repeat(indent);
+
+  if (value instanceof Block) {
+    lines.push(`${pad}${scalar(key, false)}: |`);
+    emitBlockBody(value, indent + 1, lines);
+    return;
+  }
 
   if (value instanceof Flow) {
     lines.push(`${pad}${scalar(key, false)}: ${emitFlow(value)}`);
@@ -209,6 +289,8 @@ function emitFlow(node: Flow): string {
 }
 
 function flowValue(value: YamlValue): string {
+  // 块标量没法进 flow —— 真出现说明调用方用错了结构，退化成一行安全的引号串
+  if (value instanceof Block) return scalar(value.text.replace(/\n/g, ' '), true);
   if (value instanceof Flow) return emitFlow(value);
   if (isEntries(value) || Array.isArray(value)) return emitFlow(flow(value as Entry[]));
   return scalar(value, true);
@@ -246,10 +328,180 @@ class Fields {
 // ================================================================ 节点树
 
 export function serializeNodes(roots: NodeInfo[], opts: SerializeOptions): string {
-  return toYaml(roots.map((root) => nodeValue(root, undefined, opts)));
+  const ctx = contextOf(opts);
+  return toYaml(roots.map((root) => renderNode(root, undefined, ctx)));
 }
 
-function nodeValue(node: NodeInfo, parent: NodeInfo | undefined, opts: SerializeOptions): Entry[] {
+/**
+ * 一个节点渲染成什么：折叠成一行，还是完整展开。
+ *
+ * 系统 chrome 排在最前面 —— 即使 rootId 直指状态栏本身也照样折叠，
+ * 想看内部结构就显式加 --expand-system。这和实例「直指就展开」的规则不同，
+ * 因为对状态栏来说，展开几乎总是错的选择。
+ */
+function renderNode(node: NodeInfo, parent: NodeInfo | undefined, ctx: Ctx): YamlValue {
+  if (isSystemChrome(node, ctx.fold)) return flow(systemFields(node, parent, ctx));
+  const icon = foldIcon(node, ctx.fold, (paints) => formatPaints(paints, ctx));
+  if (icon) return flow(iconFields(node, icon, parent, ctx));
+  return nodeValue(node, parent, ctx);
+}
+
+/** 图标：可导出的 id、尺寸、颜色 token —— 展开矢量几何只多这三件事之外的噪音。 */
+function iconFields(
+  node: NodeInfo,
+  icon: IconFold,
+  parent: NodeInfo | undefined,
+  ctx: Ctx,
+): Entry[] {
+  const f = new Fields();
+  f.set('type', 'Icon');
+  f.set('name', icon.name);
+  f.set('id', node.id);
+  f.set('size', Array.isArray(icon.size) ? flow(icon.size) : icon.size);
+  if (node.abs) f.set('abs', flow(node.abs));
+  if (!inFlowOf(node, parent) && node.x !== undefined && node.y !== undefined && (node.x || node.y)) {
+    f.set('pos', flow([node.x, node.y]));
+  }
+  f.set('color', icon.color);
+  if (icon.colors) f.set('colors', flow(icon.colors));
+  f.set('of', icon.of);
+  if (icon.library) f.set('library', true);
+  f.set('opacity', node.opacity);
+  // 没绑 token 的色值：文件里有 Dark mode 的话，这就是暗色下会出问题的地方
+  if (icon.unbound) f.set('warn', 'unbound-color');
+  return f.build();
+}
+
+/** 状态栏这类：只留还原容器需要的最小信息，外加可直接喂给 export 的 id。 */
+function systemFields(node: NodeInfo, parent: NodeInfo | undefined, ctx: Ctx): Entry[] {
+  const fold = foldSystem(node);
+  const f = new Fields();
+  f.set('type', 'SystemChrome');
+  f.set('of', fold.of);
+  f.set('id', node.id);
+  if (fold.size) f.set('size', flow(fold.size));
+  if (node.abs) f.set('abs', flow(node.abs));
+  if (fold.padding) f.set('padding', formatPadding(fold.padding));
+  if (fold.justify) f.set('justify', short(fold.justify));
+  f.set('opacity', fold.opacity);
+  if (fold.texts.length > 0) f.set('text', flow(fold.texts));
+  if (fold.exportable.length > 0) {
+    f.set(
+      'exportable',
+      flow(
+        fold.exportable.map((item) =>
+          flow([
+            ['name', item.name],
+            ['id', item.id],
+            ...(item.size ? ([['size', flow(item.size)]] as Entry[]) : []),
+          ]),
+        ),
+      ),
+    );
+  }
+  f.set('hint', '系统组件，建议整体切图或交给系统，不要逐节点还原');
+  return f.build();
+}
+
+/** 折叠成 `sameAs` 的那一行。 */
+function sameAsFields(leader: NodeInfo, node: NodeInfo, ctx: Ctx): Entry[] {
+  const f = new Fields();
+  f.set('sameAs', leader.id);
+  f.set('id', node.id);
+  // abs 是它和首节点的真实差异之一，而且正是「这一行落在哪」的答案
+  if (node.abs) f.set('abs', flow(node.abs));
+
+  const diff = diffNodes(leader, node, ctx.fold);
+  diff.color = diffColors(leader, node, (n) =>
+    n.styles?.fill ? `@${n.styles.fill.name}` : formatPaints(n.fills, ctx),
+  );
+
+  if (!isEmptyDiff(diff)) f.set('diff', flow(diffFields(diff)));
+  return f.build();
+}
+
+function diffFields(diff: NodeDiff): Entry[] {
+  const f = new Fields();
+  if (diff.size) f.set('size', flow(diff.size));
+  if (diff.text.length === 1) f.set('text', diff.text[0]!);
+  else if (diff.text.length > 1) f.set('text', flow(diff.text));
+  if (diff.icon.length === 1) {
+    f.set('icon', flow([['of', diff.icon[0]!.of], ['id', diff.icon[0]!.id]]));
+  } else if (diff.icon.length > 1) {
+    f.set('icon', flow(diff.icon.map((i) => flow([['of', i.of], ['id', i.id]]))));
+  }
+  if (diff.color.length === 1) f.set('color', diff.color[0]!);
+  else if (diff.color.length > 1) f.set('color', flow(diff.color));
+  if (diff.props.length > 0) f.set('props', flow(diff.props.map(([k, v]) => [k, v] as Entry)));
+  return f.build();
+}
+
+/**
+ * 子节点列表：先折叠图标 / 系统 chrome，再折叠结构同构的相邻兄弟。
+ *
+ * 折叠后每个原始 id 仍然在输出里 —— `sameAs` 行带着自己的 id，
+ * 拿去 export / node 照样能用。
+ */
+function renderChildren(children: NodeInfo[], parent: NodeInfo, ctx: Ctx): YamlValue[] {
+  const out: YamlValue[] = [];
+  const dedupe = ctx.fold.dedupe;
+  const hashes = dedupe ? children.map((child) => structureHash(child, ctx.fold)) : undefined;
+
+  let i = 0;
+  while (i < children.length) {
+    const child = children[i]!;
+    const hash = hashes?.[i];
+
+    // 跨父折叠：前文已经完整展开过同构子树，这里直接指过去
+    if (hash && ctx.fold.dedupeScope === 'document') {
+      const leader = ctx.seen.get(hash);
+      if (leader && leader.lines >= MIN_FOLD_LINES) {
+        out.push(flow(sameAsFields(leader.node, child, ctx)));
+        i++;
+        continue;
+      }
+    }
+
+    const rendered = renderNode(child, parent, ctx);
+    out.push(rendered);
+    const lines = countLines(rendered);
+    if (hash && ctx.fold.dedupeScope === 'document' && !ctx.seen.has(hash)) {
+      ctx.seen.set(hash, { node: child, lines });
+    }
+
+    // 同父相邻兄弟
+    let run = 1;
+    if (hash) {
+      while (i + run < children.length && hashes![i + run] === hash) run++;
+    }
+    if (hash && run >= 2 && lines >= MIN_FOLD_LINES) {
+      for (let j = i + 1; j < i + run; j++) {
+        out.push(flow(sameAsFields(child, children[j]!, ctx)));
+      }
+      i += run;
+      continue;
+    }
+    i++;
+  }
+  return out;
+}
+
+function countLines(value: YamlValue): number {
+  const lines: string[] = [];
+  emit(value, 0, lines);
+  return lines.length;
+}
+
+/** Auto Layout 流内：位置由布局决定，写坐标是噪音。 */
+function inFlowOf(node: NodeInfo, parent: NodeInfo | undefined): boolean {
+  return parent?.layout !== undefined && node.layoutChild?.positioning !== 'ABSOLUTE';
+}
+
+function layoutMode(mode: string): string {
+  return mode === 'HORIZONTAL' ? 'horizontal' : mode === 'VERTICAL' ? 'vertical' : 'grid';
+}
+
+function nodeValue(node: NodeInfo, parent: NodeInfo | undefined, opts: Ctx): Entry[] {
   const f = new Fields();
 
   f.set('type', TYPE_ALIAS[node.type] ?? node.type);
@@ -265,8 +517,12 @@ function nodeValue(node: NodeInfo, parent: NodeInfo | undefined, opts: Serialize
 
   if (node.w !== undefined && node.h !== undefined) f.set('size', flow([node.w, node.h]));
 
+  // 相对本次 root 的绝对坐标。跨四层累加 pos 去算「这个红点贴在哪一行」
+  // 是这套流程里最容易静默出错的一步，而 Figma 本来就知道答案
+  if (node.abs) f.set('abs', flow(node.abs));
+
   // 坐标：Auto Layout 流内的子节点位置由布局决定，写出来是噪音
-  const inFlow = parent?.layout !== undefined && node.layoutChild?.positioning !== 'ABSOLUTE';
+  const inFlow = inFlowOf(node, parent);
   if (!inFlow && node.x !== undefined && node.y !== undefined && (node.x || node.y)) {
     f.set('pos', flow([node.x, node.y]));
   }
@@ -276,10 +532,7 @@ function nodeValue(node: NodeInfo, parent: NodeInfo | undefined, opts: Serialize
   if (node.layout) {
     const l = node.layout;
     const layout = new Fields();
-    layout.set(
-      'mode',
-      l.mode === 'HORIZONTAL' ? 'horizontal' : l.mode === 'VERTICAL' ? 'vertical' : 'grid',
-    );
+    layout.set('mode', layoutMode(l.mode));
     if (l.wrap) layout.set('wrap', true);
     layout.set('gap', l.gap);
     layout.set('gapCross', l.gapCross);
@@ -379,14 +632,15 @@ function nodeValue(node: NodeInfo, parent: NodeInfo | undefined, opts: Serialize
   if (node.exportable) f.set('exportable', true);
 
   if (node.children?.length) {
-    f.set(
-      'children',
-      node.children.map((child) => nodeValue(child, node, opts)),
-    );
+    f.set('children', renderChildren(node.children, node, opts));
   }
   // 只标记「还有东西没展开」。具体差几个、为什么没展开，都不值得逐行重复 ——
   // 下钻用的 rootId 就是同一行的 id，截断原因在文档末尾的注释里
-  if (node.truncated) f.set('more', true);
+  if (node.truncated) {
+    f.set('more', true);
+    // 没有这个数就只能靠猜：保守地一层层试，或者赌一把深度然后被几百行淹没
+    f.set('descendants', node.descendants);
+  }
 
   return f.build();
 }
@@ -397,6 +651,8 @@ function textFields(text: TextInfo, node: NodeInfo, opts: SerializeOptions): Ent
   if (node.styles?.text) {
     f.set('style', `@${node.styles.text.name}`);
   } else {
+    // 没绑样式的裸字号：把 CSS 真正需要的三个值（字号 / 行高 / 字重）都给全，
+    // 不要让使用者拿 style 名去猜 font-weight
     const family =
       text.fontFamily && text.fontStyle ? `${text.fontFamily} ${text.fontStyle}` : text.fontFamily;
     f.set('face', family);
@@ -408,6 +664,11 @@ function textFields(text: TextInfo, node: NodeInfo, opts: SerializeOptions): Ent
           : text.fontSize,
       );
     }
+    const { weight, italic } = parseFontStyle(text.fontStyle);
+    f.set('weight', weight);
+    if (italic) f.set('italic', true);
+    // 行高是从渲染高度实测的，不是设计师显式给的值
+    if (text.lineHeightAuto) f.set('lineHeightFrom', 'measured');
   }
 
   if (text.letterSpacing) f.set('tracking', text.letterSpacing);
@@ -440,6 +701,11 @@ function textFields(text: TextInfo, node: NodeInfo, opts: SerializeOptions): Ent
 }
 
 // ================================================================ 值格式化
+
+/** 给 yaml.ts 之外的地方用（切图清单要按同一套规则显示颜色 token）。 */
+export function paintText(paints: PaintInfo[] | undefined): string | undefined {
+  return formatPaints(paints, { detail: 'compact' });
+}
 
 function formatPaints(paints: PaintInfo[] | undefined, opts: SerializeOptions): string | undefined {
   if (!paints?.length) return undefined;
@@ -559,13 +825,234 @@ export function serializeContext(ctx: DocumentContext, opts: SerializeOptions): 
   if (ctx.selection.length > 0) {
     f.set(
       'selection',
-      ctx.selection.map((node) => nodeValue(node, undefined, opts)),
+      ctx.selection.map((node) => renderNode(node, undefined, contextOf(opts))),
     );
   } else {
     f.set('selection', []);
     f.set('hint', '当前没有选中任何节点。让用户在 Figma 里选中目标 Frame，或用 search_nodes 定位');
   }
 
+  return toYaml(f.build());
+}
+
+/**
+ * `--stat` 的输出：每个直接子节点一行，只报规模。
+ *
+ * 行数恒定为直接子节点数，不随子树大小增长 —— 这正是它存在的意义：
+ * 先花 5 行知道「这棵树 210 个节点」，再决定是展开还是切图。
+ */
+export function serializeStats(stats: NodeStat[]): string {
+  if (stats.length === 0) {
+    return toYaml([
+      ['stats', []],
+      ['hint', '该节点没有子节点'],
+    ]);
+  }
+  return toYaml([
+    [
+      'stats',
+      stats.map((stat) => {
+        const f = new Fields();
+        f.set('id', stat.id);
+        f.set('name', stat.name);
+        f.set('type', TYPE_ALIAS[stat.type] ?? stat.type);
+        f.set('descendants', stat.descendants);
+        f.set('depth', stat.depth);
+        if (stat.instance) f.set('instance', true);
+        f.set('systemChrome', stat.systemChrome);
+        return flow(f.build());
+      }),
+    ],
+  ]);
+}
+
+/**
+ * 走查结果。
+ *
+ * 一条一行（flow），因为它是给人扫读的清单不是要逐字段解析的数据；
+ * path 用 › 串成可读路径，免去「拿到 id 还得再定位一次」。
+ */
+/**
+ * `figma plan` 的输出。
+ *
+ * 各段的顺序就是使用顺序：先知道要还原什么（target/structure），
+ * 再知道哪些是复用的（components），再拿 token 和切图清单，最后是走查。
+ */
+export function serializePlan(input: {
+  root: NodeInfo;
+  structure: NodeInfo[];
+  components: ComponentUse[];
+  modes: string[];
+  colors: { name: string; uses?: number; values: [string, string][] }[];
+  textStyles: TextStyleSummary[];
+  spacing: SpacingSummary;
+  assets: AssetItem[];
+  texts: string[];
+  findings: LintFinding[];
+  sections: readonly PlanSection[];
+  opts: SerializeOptions;
+}): string {
+  const ctx = contextOf(input.opts);
+  const want = (section: PlanSection): boolean => input.sections.includes(section);
+  const f = new Fields();
+
+  if (want('target')) {
+    const target = new Fields();
+    target.set('name', input.root.name);
+    target.set('id', input.root.id);
+    if (input.root.w !== undefined) target.set('size', flow([input.root.w, input.root.h!]));
+    if (input.root.clipsContent) target.set('clip', true);
+    const fill = input.root.styles?.fill
+      ? `@${input.root.styles.fill.name}`
+      : formatPaints(input.root.fills, ctx);
+    target.set('fill', fill);
+    // 根节点有没有 Auto Layout 决定了整页是 flex 流还是绝对定位
+    target.set('layoutRoot', input.root.layout ? layoutMode(input.root.layout.mode) : 'absolute');
+    const absolute = (input.root.children ?? []).filter(
+      (child) => child.layoutChild?.positioning === 'ABSOLUTE' || !input.root.layout,
+    ).length;
+    if (!input.root.layout && absolute > 0) {
+      target.set('note', `${absolute} 个直接子节点靠坐标定位，其余在 Auto Layout 流内`);
+    }
+    f.set('target', target.build());
+  }
+
+  if (want('structure')) {
+    f.set('structure', input.structure.map((node) => renderNode(node, undefined, ctx)));
+  }
+
+  if (want('components') && input.components.length > 0) {
+    f.set(
+      'components',
+      input.components.map((use) => {
+        const item = new Fields();
+        item.set('of', use.of);
+        if (use.library) item.set('library', true);
+        item.set('count', use.count);
+        if (use.props.size > 0) {
+          item.set(
+            'props',
+            flow(
+              [...use.props].map(
+                ([key, values]) => [key, values.size === 1 ? [...values][0]! : flow([...values])] as Entry,
+              ),
+            ),
+          );
+        }
+        item.set('ids', flow(use.ids));
+        item.set('warn', use.resized);
+        return flow(item.build());
+      }),
+    );
+  }
+
+  if (want('tokens')) {
+    const tokens = new Fields();
+    if (input.modes.length > 0) tokens.set('modes', flow(input.modes));
+    if (input.modes.some((mode) => /dark|深色|暗色/i.test(mode))) {
+      tokens.set('warn', '文件含 Dark mode，代码里的颜色必须是可切换变量，禁止写死单 mode 值');
+    }
+    if (input.colors.length > 0) {
+      tokens.set(
+        'colors',
+        input.colors.map((color) => {
+          const item = new Fields();
+          item.set('name', `$${color.name}`);
+          item.set('uses', color.uses);
+          for (const [mode, value] of color.values) item.set(mode, value);
+          return flow(item.build());
+        }),
+      );
+    }
+    if (input.textStyles.length > 0) {
+      tokens.set(
+        'text',
+        input.textStyles.map((style) => {
+          const item = new Fields();
+          item.set('name', `@${style.name}`);
+          item.set('uses', style.uses);
+          item.set('family', style.family);
+          item.set('size', style.size);
+          item.set('lineHeight', style.lineHeight);
+          item.set('weight', style.weight);
+          if (style.measured) item.set('lineHeightFrom', 'measured');
+          return flow(item.build());
+        }),
+      );
+    }
+    const spacing = new Fields();
+    if (input.spacing.scale.length > 0) {
+      spacing.set('scale', flow(input.spacing.scale.map(([name, value]) => [name, value] as Entry)));
+    }
+    if (input.spacing.used.length > 0) spacing.set('used', flow(input.spacing.used));
+    if (input.spacing.offScale.length > 0) {
+      spacing.set('offScale', flow(input.spacing.offScale));
+    }
+    if (spacing.length > 0) tokens.set('spacing', spacing.build());
+    if (tokens.length > 0) f.set('tokens', tokens.build());
+  }
+
+  if (want('assets') && input.assets.length > 0) {
+    f.set(
+      'assets',
+      input.assets.map((asset) => {
+        const item = new Fields();
+        item.set('id', asset.id);
+        item.set('name', asset.name);
+        item.set('size', Array.isArray(asset.size) ? flow(asset.size) : asset.size);
+        item.set('color', asset.color);
+        if (asset.colors) item.set('colors', flow(asset.colors));
+        if (asset.unbound) item.set('warn', 'unbound-color');
+        return flow(item.build());
+      }),
+    );
+  }
+
+  if (want('text') && input.texts.length > 0) f.set('text', flow(input.texts));
+
+  if (want('lint') && input.findings.length > 0) {
+    f.set(
+      'lint',
+      input.findings.map((item) => {
+        const entry = new Fields();
+        entry.set('level', item.level);
+        entry.set('rule', item.rule);
+        entry.set('node', item.node);
+        entry.set('path', item.path);
+        entry.set('detail', item.detail);
+        return flow(entry.build());
+      }),
+    );
+  }
+
+  return toYaml(f.build());
+}
+
+export function serializeLint(findings: LintFinding[], darkMode: boolean): string {
+  const f = new Fields();
+  if (darkMode) {
+    f.set('note', '文件含 Dark mode —— 任何裸色值都是 bug，代码里的颜色必须是可切换变量');
+  }
+  if (findings.length === 0) {
+    f.set('findings', []);
+    f.set('hint', '没有命中任何规则');
+    return toYaml(f.build());
+  }
+  f.set(
+    'findings',
+    findings.map((item) => {
+      const entry = new Fields();
+      entry.set('level', item.level);
+      entry.set('rule', item.rule);
+      entry.set('node', item.node);
+      if (item.nodes) entry.set('nodes', flow(item.nodes));
+      entry.set('path', item.path);
+      entry.set('of', item.of);
+      entry.set('detail', item.detail);
+      entry.set('fix', item.fix);
+      return flow(entry.build());
+    }),
+  );
   return toYaml(f.build());
 }
 
@@ -603,6 +1090,83 @@ export function serializeTextItems(items: TextItem[], truncated: boolean): strin
   return toYaml(f.build());
 }
 
+/**
+ * 同名集合合并。
+ *
+ * 同一个 `fd_sys_color` 会从本地、teamLibrary、引用反查三条路各来一份，
+ * 变量也跟着重复三四遍，而且各份的 mode 列表还不一定一样。原样输出既浪费
+ * 上下文，又会让人以为「有好几个不同的 fd_sys_color」。
+ *
+ * 合并规则：mode 取并集（缺 mode 的那一份在 note 里点名），变量按名字去重、
+ * 值互相补齐。真有一份缺 mode 就说出来，不要静默取并集 —— 那可能是设计系统
+ * 本身的问题。
+ */
+function mergeCollections(collections: VariableCollectionInfo[]): {
+  collection: VariableCollectionInfo;
+  note?: string;
+}[] {
+  const groups = new Map<string, VariableCollectionInfo[]>();
+  for (const collection of collections) {
+    const list = groups.get(collection.name) ?? [];
+    list.push(collection);
+    groups.set(collection.name, list);
+  }
+
+  const out: { collection: VariableCollectionInfo; note?: string }[] = [];
+  for (const [name, list] of groups) {
+    if (list.length === 1) {
+      out.push({ collection: list[0]! });
+      continue;
+    }
+
+    const modes: { id: string; name: string }[] = [];
+    for (const collection of list) {
+      for (const mode of collection.modes) {
+        if (!modes.some((m) => m.name === mode.name)) modes.push(mode);
+      }
+    }
+
+    const byName = new Map<string, VariableInfo>();
+    for (const collection of list) {
+      for (const variable of collection.variables ?? []) {
+        const existing = byName.get(variable.name);
+        if (!existing) {
+          byName.set(variable.name, { ...variable, valuesByMode: { ...variable.valuesByMode } });
+          continue;
+        }
+        for (const [mode, value] of Object.entries(variable.valuesByMode)) {
+          existing.valuesByMode[mode] ??= value;
+        }
+        if (variable.uses !== undefined) {
+          existing.uses = Math.max(existing.uses ?? 0, variable.uses);
+        }
+        existing.description ??= variable.description;
+      }
+    }
+
+    const variables = [...byName.values()];
+    const merged: VariableCollectionInfo = {
+      ...list[0]!,
+      name,
+      modes,
+      variableCount: variables.length,
+      variables,
+    };
+
+    const short = list.filter((c) => c.modes.length > 0 && c.modes.length < modes.length);
+    const note =
+      short.length > 0
+        ? `合并了 ${list.length} 份同名集合，其中 ${short.length} 份缺 mode：` +
+          modes
+            .filter((m) => short.some((c) => !c.modes.some((x) => x.name === m.name)))
+            .map((m) => m.name)
+            .join(' / ')
+        : `合并了 ${list.length} 份同名集合`;
+    out.push({ collection: merged, note });
+  }
+  return out;
+}
+
 export function serializeVariables(collections: VariableCollectionInfo[]): string {
   if (collections.length === 0) {
     return toYaml([
@@ -618,7 +1182,7 @@ export function serializeVariables(collections: VariableCollectionInfo[]): strin
   return toYaml([
     [
       'collections',
-      collections.map((collection) => {
+      mergeCollections(collections).map(({ collection, note: mergeNote }) => {
         const modes = collection.modes.map((m) => m.name);
         const f = new Fields();
         f.set('name', collection.name);
@@ -629,6 +1193,7 @@ export function serializeVariables(collections: VariableCollectionInfo[]): strin
         f.set('library', collection.libraryName);
         if (collection.remote && !collection.libraryName) f.set('remote', true);
         if (collection.referenced) f.set('source', 'referenced');
+        f.set('note', mergeNote);
 
         const variables = collection.variables ?? [];
         if (variables.length > 0) {
@@ -638,6 +1203,8 @@ export function serializeVariables(collections: VariableCollectionInfo[]): strin
               const v = new Fields();
               v.set('name', `$${variable.name}`);
               v.set('type', variable.type.toLowerCase());
+              // 引用次数：高频 token 就是最该先和项目里的变量对齐的那几个
+              v.set('uses', variable.uses);
 
               const values = modes
                 .map((mode) => {
@@ -693,18 +1260,23 @@ export function serializeStyles(styles: StyleInfo[]): string {
         }
         if (style.text) {
           const t = style.text;
-          f.set(
-            'font',
-            [
-              t.fontFamily && t.fontStyle ? `${t.fontFamily} ${t.fontStyle}` : t.fontFamily,
-              t.fontSize !== undefined ? `${t.fontSize}/${t.lineHeight ?? 'auto'}` : undefined,
-              t.letterSpacing ? `tracking=${t.letterSpacing}` : undefined,
-              t.textCase ? `case=${short(t.textCase)}` : undefined,
-            ]
-              .filter(Boolean)
-              .join(' '),
-          );
+          // 结构化而不是拼成一行字符串：写 CSS 要的是 font-size / line-height /
+          // font-weight 三个独立的值，"Flyme Sans VF Medium 20/auto" 三个都没给全
+          const font = new Fields();
+          font.set('family', t.fontFamily);
+          font.set('style', t.fontStyle);
+          const { weight, italic } = parseFontStyle(t.fontStyle);
+          font.set('weight', weight);
+          if (italic) font.set('italic', true);
+          font.set('size', t.fontSize);
+          font.set('lineHeight', lineHeightPx(t.lineHeight, t.fontSize) ?? t.lineHeight);
+          font.set('tracking', t.letterSpacing);
+          if (t.textCase) font.set('case', short(t.textCase));
+          f.set('font', flow(font.build()));
+          // auto 行高是从页面上单行文本的渲染高度实测的，不是设计师显式给的
+          if (t.lineHeightAuto) f.set('lineHeightFrom', 'measured');
         }
+        f.set('uses', style.uses);
         if (style.remote) f.set('library', true);
         if (style.referenced) f.set('source', 'referenced');
         f.set('desc', style.description);

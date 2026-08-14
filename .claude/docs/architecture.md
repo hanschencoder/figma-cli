@@ -23,9 +23,15 @@ CLI 是短命进程，每次执行都等插件重新握手要好几秒。
 | 采集 | `packages/plugin/src/collect/` | 字段白名单裁剪，产出中间 JSON |
 | 中间形状 | `packages/shared/src/model.ts` | 两端共用的数据契约 |
 | 序列化 | `packages/server/src/yaml.ts` | 中间 JSON → YAML 文本 |
+| 折叠 | `packages/server/src/fold.ts` | 图标 / 系统 chrome / 同构兄弟的判定与差异计算 |
+| 派生 | `server/src/{lint,css,plan,svg,font}.ts` | 从同一份中间 JSON 派生走查 / CSS / 调研 / SVG 后处理 |
 
-**改输出格式优先改 `yaml.ts`** —— 插件每改一行都要重新 build + 在 Figma 里重载，
-daemon 重启一下就生效。只有当需要的字段插件根本没采集时，才动 `collect/`。
+**改输出格式优先改 `yaml.ts` / `fold.ts`** —— 插件每改一行都要重新 build + 在 Figma
+里重载，daemon 重启一下就生效。只有当需要的字段插件根本没采集时，才动 `collect/`。
+
+折叠、走查、CSS、plan 全都跑在 server 侧，吃的是同一份中间 JSON。**插件只管把
+一棵完整的树捞回来**，怎么裁、怎么聚合、怎么呈现都是 server 的事 —— 这样加一个
+派生视角（比如未来的 `figma diff`）不需要碰插件。
 
 ## tools/registry.ts 是单一事实来源
 
@@ -53,6 +59,12 @@ cli.ts 解析参数(zod) → POST /call → daemon.ts 路由 → registry 的 ru
 | `shared/src/config.ts` | 端口段、分片大小、图像上限等常量。**manifest 从这里生成** |
 | `shared/src/protocol.ts` | WS 线协议：hello / req / res / chunk / event |
 | `server/src/hub.ts` | WS + HTTP 服务、端口绑定、请求关联、分片重组、心跳 |
+| `server/src/fold.ts` | 三种结构折叠的判定 + 结构哈希 + 同构差异。**有损，每条都留了关闭开关** |
+| `server/src/lint.ts` | 设计走查规则。只报告不修改 |
+| `server/src/css.ts` | Auto Layout → flex 的机械翻译。不生成 HTML、不猜组件名 |
+| `server/src/plan.ts` | `figma plan` 的聚合：组件复用、切图清单、文案、间距刻度 |
+| `server/src/svg.ts` | 导出 SVG 的 currentColor 替换与外壳剥离 |
+| `server/src/font.ts` | style 名 → font-weight 数值、行高百分比 → 像素 |
 | `server/src/daemon.ts` | 常驻进程装配：Hub + tools + `/call` `/shutdown` 路由 |
 | `server/src/router.ts` | 多文档路由，拒绝静默猜测目标 |
 | `plugin/src/ui.ts` | 端口扫描、重连 watchdog、请求来源路由、base64 分片 |

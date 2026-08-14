@@ -109,6 +109,11 @@ export interface TextInfo {
   fontSize?: number;
   /** 归一化成 "24px" / "150%" / "auto" */
   lineHeight?: string;
+  /**
+   * lineHeight 是 Figma 的 auto，上面那个像素值是**从渲染高度实测**出来的。
+   * auto 对写 CSS 等于没给，所以单行文本一律实测补上 —— 但要让下游知道它的来路。
+   */
+  lineHeightAuto?: true;
   /** 归一化成 "0.5px" / "2%" */
   letterSpacing?: string;
   textAlignH?: string;
@@ -138,6 +143,8 @@ export interface ComponentInfo {
   key?: string;
   /** 主组件来自远端 Library */
   remote?: boolean;
+  /** 主组件自身的尺寸。实例被拖改过尺寸时和它对不上，是走查项 instance-resized */
+  mainSize?: [number, number];
   componentSetName?: string;
   description?: string;
   /** 实例的属性覆盖 / 组件的变体属性 */
@@ -159,6 +166,13 @@ export interface NodeInfo {
   /** 相对父节点 */
   x?: number;
   y?: number;
+  /**
+   * 相对**本次请求根节点**左上角的绝对坐标。
+   *
+   * 没有它就得跨层累加 pos 才能知道一个绝对定位元素落在哪一行 —— 那种手算
+   * 错一位也看不出来，错误会直接进交付物。所以宁可每个节点多一行。
+   */
+  abs?: [number, number];
   w?: number;
   h?: number;
   rotation?: number;
@@ -169,6 +183,14 @@ export interface NodeInfo {
 
   layout?: LayoutInfo;
   layoutChild?: LayoutChildInfo;
+  /**
+   * 父级的 Auto Layout 方向。只在**本次请求的根节点**上给出 ——
+   * 树里的其它节点看父节点自己的 layout 就行。
+   *
+   * 单独取一个节点写 CSS 时缺了它就没法判断 `sizing: {w: fill}` 落在主轴
+   * （flex:1）还是交叉轴（align-self:stretch）。
+   */
+  parentLayoutMode?: 'HORIZONTAL' | 'VERTICAL' | 'GRID' | 'NONE';
   /** 非 Auto Layout 父级下的约束 */
   constraints?: { h: string; v: string };
   clipsContent?: boolean;
@@ -201,9 +223,26 @@ export interface NodeInfo {
   children?: NodeInfo[];
   /** children 被截断时给出总数，提示可以继续下钻 */
   childCount?: number;
+  /** 后代节点总数。截断处给出，用来预估「展开它要花多少行」 */
+  descendants?: number;
   truncated?: true;
   /** 截断原因。instance 需要给出和 depth/budget 不同的下一步建议 */
   truncatedBy?: 'depth' | 'budget' | 'instance';
+}
+
+/** --stat 模式的一行：只报结构规模，不报内容。 */
+export interface NodeStat {
+  id: string;
+  name: string;
+  type: string;
+  /** 后代总数 */
+  descendants: number;
+  /** 子树最大深度 */
+  depth: number;
+  /** 是组件实例 */
+  instance?: true;
+  /** 子树里命中系统组件名单的节点数 */
+  systemChrome?: number;
 }
 
 export interface NodeMatch {
@@ -240,6 +279,8 @@ export interface VariableInfo {
   valuesByMode: Record<string, VariableValue>;
   scopes?: string[];
   remote?: boolean;
+  /** 在 usedBy 指定的子树里被引用了几次。高频 token 就是最该先对齐的那几个 */
+  uses?: number;
 }
 
 export interface VariableCollectionInfo {
@@ -284,6 +325,8 @@ export interface StyleInfo {
   paints?: PaintInfo[];
   text?: TextInfo;
   effects?: EffectInfo[];
+  /** 在 usedBy 指定的子树里被引用了几次 */
+  uses?: number;
 }
 
 export interface ComponentSummary {

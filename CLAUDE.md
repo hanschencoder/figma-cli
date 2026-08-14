@@ -56,6 +56,16 @@ token。组件实例内部默认不展开、文本图层名与内容重复时只
 **输出格式改 `server/src/yaml.ts`，不要改插件。** 插件改一行要重新 build 加在 Figma
 里重载；daemon 重启就生效。只有字段根本没采集时才动 `plugin/src/collect/`。
 
+**折叠 / 走查 / 派生视角都在 server 侧吃同一份中间 JSON。** 插件只负责把一棵完整的树
+捞回来，怎么裁（`fold.ts` 的图标/系统 chrome/同构兄弟折叠）、怎么聚合（`plan.ts`）、
+怎么走查（`lint.ts`）、怎么翻译（`css.ts`）都是 server 的事。加派生视角不要动插件。
+折叠是**有损**的 —— 每条都必须留一个关闭开关（`--expand-icons` / `--expand-system` /
+`--no-dedupe`），且**折叠后原始节点 id 必须仍能在输出里检索到**（`sameAs` 行带自己的 id）。
+
+**能机械算出来的就别让使用者手算。** `abs` 绝对坐标（不用逐层累加 pos）、行高实测值
+（不用拿 size 反推）、font-weight 数值（不用查 style 名表）、currentColor 替换 —— 这些
+都是「算错一位也看不出来、错误直接进交付物」的地方，宁可每个节点多一行也要给全。
+
 **tool 定义只写在 `server/src/tools/registry.ts`。** CLI 和 MCP 是两个前端，共用同一份
 zod schema / 实现 / 描述；CLI 的 `--help` 和参数校验从 schema 反射生成。
 
