@@ -15,7 +15,8 @@
     "build:plugin": "npm run build -w @figma-mcp/plugin",
     "dev:plugin": "npm run dev -w @figma-mcp/plugin",
     "typecheck": "tsc -b packages/shared packages/server packages/plugin",
-    "clean": "rm -rf packages/*/dist packages/*/build packages/*/*.tsbuildinfo"
+    "clean": "rm -rf packages/*/dist packages/*/build packages/*/*.tsbuildinfo",
+    "smoke": "node scripts/smoke.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
