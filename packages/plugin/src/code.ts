@@ -55,7 +55,13 @@ figma.ui.onmessage = async (msg: UiToSandbox) => {
     case 'req': {
       try {
         const { result, bytes } = await dispatch(msg.method, msg.params);
-        send(bytes ? { kind: 'res', id: msg.id, ok: true, result, bytes } : { kind: 'res', id: msg.id, ok: true, result });
+        send({
+          kind: 'res',
+          id: msg.id,
+          ok: true,
+          result,
+          ...(bytes ? { base64: figma.base64Encode(bytes) } : {}),
+        });
       } catch (err) {
         const error = toProtocolError(err);
         send({ kind: 'res', id: msg.id, ok: false, error });

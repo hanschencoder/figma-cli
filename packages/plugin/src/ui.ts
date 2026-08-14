@@ -6,7 +6,7 @@
  *      等 TCP 超时），连上所有活着的 server
  *   2. 断线后持续重连 —— 插件常常先于 server 打开，不能要求用户手动重启插件
  *   3. 把 server 的 req 转给沙箱，把沙箱的 res 转回**发起请求的那个** server
- *   4. 二进制载荷 base64 分片
+ *   4. 把沙箱编码好的 base64 载荷分片发出
  */
 
 import {
@@ -153,9 +153,8 @@ window.onmessage = (event: MessageEvent) => {
         return;
       }
 
-      if (msg.bytes && msg.bytes.byteLength > 0) {
-        const base64 = toBase64(msg.bytes);
-        const chunks = splitChunks(base64);
+      if (msg.base64) {
+        const chunks = splitChunks(msg.base64);
         for (let i = 0; i < chunks.length; i++) {
           const chunk: ChunkMessage = {
             type: 'chunk',
@@ -170,11 +169,7 @@ window.onmessage = (event: MessageEvent) => {
           type: 'res',
           id: msg.id,
           ok: true,
-          result: {
-            ...(msg.result as object),
-            byteLength: msg.bytes.byteLength,
-            chunkCount: chunks.length,
-          },
+          result: { ...(msg.result as object), chunkCount: chunks.length },
         });
         return;
       }
@@ -314,19 +309,6 @@ function send(conn: Conn, msg: PluginToServerMessage): void {
 }
 
 // ------------------------------------------------------- 工具
-
-function toBase64(bytes: Uint8Array): string {
-  // 一次性 String.fromCharCode(...bytes) 在几 MB 上会爆栈，必须分段
-  let binary = '';
-  const step = 0x8000;
-  for (let i = 0; i < bytes.length; i += step) {
-    binary += String.fromCharCode.apply(
-      null,
-      bytes.subarray(i, i + step) as unknown as number[],
-    );
-  }
-  return btoa(binary);
-}
 
 function splitChunks(base64: string): string[] {
   const out: string[] = [];

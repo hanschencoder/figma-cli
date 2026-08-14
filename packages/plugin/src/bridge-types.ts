@@ -17,8 +17,12 @@ export type SandboxToUi =
       id: string;
       ok: true;
       result: unknown;
-      /** 图像等二进制载荷。Figma 的 postMessage 支持 Uint8Array */
-      bytes?: Uint8Array;
+      /**
+       * 图像等二进制载荷，已在沙箱侧用 figma.base64Encode 编码。
+       * 放在沙箱编码而不是 UI：那是原生实现，比 UI 里手写分段
+       * String.fromCharCode 更快，也不会在几 MB 上爆栈。
+       */
+      base64?: string;
     }
   | { kind: 'res'; id: string; ok: false; error: ProtocolError }
   | { kind: 'event'; name: 'selectionchange' | 'currentpagechange'; payload: unknown }
