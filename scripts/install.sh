@@ -442,19 +442,31 @@ MANIFEST="$REPO_ROOT/packages/plugin/manifest.json"
 
 if [ "$IS_UPDATE" = 1 ]; then
   step "更新完成：v$PREV_VERSION ($PREV_COMMIT) → v$VERSION ($COMMIT)" 🎉
-  info "插件代码可能也变了 —— 在 Figma 里关掉插件窗口重开一次"
-  dim "只有 manifest.json 变了才需要重新 Import（端口段变更时）"
 else
   step "安装完成：v$VERSION ($COMMIT)" 🎉
-  cat <<EOF
-
-    $(emo 🧩)还差一步 —— 在 Figma 桌面版里导入插件（只需一次）：
-      Plugins → Development → Import plugin from manifest...
-      选择 $MANIFEST
-
-    然后 Plugins → Development → Figma CLI Bridge 运行它。
-EOF
 fi
+
+# 插件只能手动导入 —— Figma 没有给插件安装留任何脚本通道。这一步不做的话
+# 前面装的东西一个都用不了，所以它必须是一个显眼的步骤，而不是脚注。
+step "还差一步：在 Figma 里导入插件" 🧩
+
+if [ "$IS_UPDATE" = 1 ]; then
+  info "已经导入过：关掉插件窗口重开一次即可（插件代码可能变了）"
+  dim "只有 manifest.json 变了才必须重新 Import —— Figma 在应用级缓存插件文件，"
+  dim "这种情况下重开窗口不够。端口段调整时会遇到"
+  info "还没导入过，照下面三步做："
+fi
+
+cat <<EOF
+
+      1. Figma 桌面版 → Plugins → Development → Import plugin from manifest...
+      2. 选择这个文件：
+         $MANIFEST
+      3. Plugins → Development → Figma CLI Bridge，运行它
+
+EOF
+
+warn "插件不跑的话，figma-cli 的所有命令都会报 NO_DOCUMENT"
 
 if [ "${MANAGED:-0}" = 1 ]; then
   dim "仓库在 $REPO_ROOT —— 命令与 skill 都是指向它的软链，别删；重跑本脚本即可更新"
