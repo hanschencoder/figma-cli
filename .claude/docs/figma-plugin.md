@@ -4,8 +4,7 @@
 
 ## dynamic-page 下全异步
 
-manifest 用 `documentAccess: "dynamic-page"`。同步的 `figma.getNodeById`、直接遍历
-其它页的 `children` 会抛错。必须用：
+manifest 用 `documentAccess: "dynamic-page"`。同步的 `figma.getNodeById`、直接遍历其它页的 `children` 会抛错。必须用：
 
 - `figma.getNodeByIdAsync(id)`
 - `page.loadAsync()` —— 访问非当前页的内容前
@@ -15,18 +14,14 @@ manifest 用 `documentAccess: "dynamic-page"`。同步的 `figma.getNodeById`、
 
 ## manifest 是生成的
 
-`packages/plugin/manifest.json` 由 `build.mjs` 从 `shared/src/config.ts` 的
-`PORT_RANGE_START/END` 生成，**不要手改**。
+`packages/plugin/manifest.json` 由 `build.mjs` 从 `shared/src/config.ts` 的 `PORT_RANGE_START/END` 生成，**不要手改**。
 
 两条 Figma 的校验规则：
 
-- `allowedDomains` **不接受 IP 字面量**，`http://127.0.0.1` 会报
-  `must be a valid URL`。只能写 `localhost`，且**必须带端口**
-- 因此 daemon 在同一端口同时绑 `127.0.0.1` 和 `::1`（`config.ts` 的 `BIND_HOSTS`），
-  避免 `localhost` 解析到未监听的那一栈
+- `allowedDomains` **不接受 IP 字面量**，`http://127.0.0.1` 会报 `must be a valid URL`。只能写 `localhost`，且**必须带端口**
+- 因此 daemon 在同一端口同时绑 `127.0.0.1` 和 `::1`（`config.ts` 的 `BIND_HOSTS`），避免 `localhost` 解析到未监听的那一栈
 
-端口段 3055–3064 全部放行，daemon 逐个尝试绑定。改端口段要重新 build 并**重新
-Import manifest**。
+端口段 3055–3064 全部放行，daemon 逐个尝试绑定。改端口段要重新 build 并**重新 Import manifest**。
 
 ## 插件重载规则
 
@@ -37,9 +32,7 @@ Figma 在**应用级**缓存插件文件：
 
 ## 二进制载荷
 
-图像用沙箱内置的 `figma.base64Encode(bytes)` 编码后再过 `postMessage`，不要在 UI 侧
-手写 `String.fromCharCode` 分段循环 —— 那在几 MB 上会爆栈，而且多一次
-Uint8Array 的结构化克隆。UI 只负责把 base64 字符串按 `CHUNK_SIZE` 切片。
+图像用沙箱内置的 `figma.base64Encode(bytes)` 编码后再过 `postMessage`，不要在 UI 侧手写 `String.fromCharCode` 分段循环 —— 那在几 MB 上会爆栈，而且多一次 Uint8Array 的结构化克隆。UI 只负责把 base64 字符串按 `CHUNK_SIZE` 切片。
 
 ## v2 写操作预警
 

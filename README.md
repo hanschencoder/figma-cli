@@ -10,7 +10,7 @@
 
 1. **速率限制**。REST API 有 rate limit，稍微密集一点的迭代就被卡住 —— 这是最初的直接动机。
 2. **只能读，不能写**。REST API 没有写能力，修改设计稿唯一的路径是 Plugin API。
-3. **读不到"当前状态"**。未保存的编辑、当前选中项、本地未发布的变量与组件 override，REST 都看不到。
+3. **读不到「当前状态」**。未保存的编辑、当前选中项、本地未发布的变量与组件 override，REST 都看不到。
 
 改用 **Figma Plugin API**，这三点同时解决：插件运行在 Figma 进程内，直接访问内存里的文档树，没有任何速率限制，能读能写，看到的永远是屏幕上此刻的样子。
 
@@ -18,9 +18,9 @@
 
 ### 相对 REST 方案的核心增量
 
-不只是"没有速率限制"。真正拉开差距的是 **design token 还原能力**：
+不只是「没有速率限制」。真正拉开差距的是 **design token 还原能力**：
 
-节点上的 `boundVariables` / `fillStyleId` 能把一个颜色值反查回它绑定的变量或样式名。于是输出给模型的不是 `#0A84FF`，而是 `$color/brand`。模型据此生成的代码会写 `var(--color-brand)` 而不是硬编码色值 —— 这才是"设计稿转代码"真正有用的地方。
+节点上的 `boundVariables` / `fillStyleId` 能把一个颜色值反查回它绑定的变量或样式名。于是输出给模型的不是 `#0A84FF`，而是 `$color/brand`。模型据此生成的代码会写 `var(--color-brand)` 而不是硬编码色值 —— 这才是「设计稿转代码」真正有用的地方。
 
 ---
 
@@ -31,7 +31,8 @@
 | **设计稿 → 代码** | 读取选中 Frame 的布局/样式/文本，输出结构化描述供 AI 生成界面代码（skill 面向 Android：Compose / View） | ✅ |
 | **设计系统提取** | 导出变量、样式、组件清单，同步成代码里的 design token | ✅ |
 | **切图** | 按设计师配好的导出设置或指定格式/倍率，把资源导进项目目录 | ✅ |
-| 批量改稿 / 规范检查 | 批量替换文案、检查 token 使用一致性 | v2 |
+| **设计走查** | 扫出裸色值、裸字号、被 detach 的实例、不在刻度表里的间距，只报告不改稿 | ✅ |
+| 批量改稿 | 按走查结果批量替换文案、把裸值换成 token | v2 |
 | AI 生成设计稿 | 自然语言驱动在 Figma 中创建页面 | v2 |
 
 **v1 是只读的。** 先把 CLI ↔ daemon ↔ 插件 ↔ Figma 这条链路做扎实，写操作留到第二阶段。协议和目录结构为写操作预留了位置（method 命名空间 `node.get*` / 未来 `node.set*`），但 v1 不实现。
@@ -49,31 +50,26 @@ git clone <仓库地址> && cd figma-cli
 bash scripts/install.sh
 ```
 
-一条命令做完：装依赖 → 构建三个包 → 把 `figma-cli` 命令链到 PATH → 把 skill 链到
-`~/.claude/skills/figma-cli` → 停掉可能还在跑的旧 daemon。
+一条命令做完：装依赖 → 构建三个包 → 把 `figma-cli` 命令链到 PATH → 把 skill 链到 `~/.claude/skills/figma-cli` → 停掉可能还在跑的旧 daemon。
 
-**更新就是再跑一遍**（`git pull && bash scripts/install.sh`），脚本会认出已装版本、
-接着更新。skill 是软链，跟着仓库走，不用单独管。
+**更新就是再跑一遍**（`git pull && bash scripts/install.sh`），脚本会认出已装版本、接着更新。skill 是软链，跟着仓库走，不用单独管。
 
 ```bash
 bash scripts/install.sh --uninstall   # 卸载
 bash scripts/install.sh --force       # figma-cli 命令 / skill 已被别的东西占用时接管（先备份）
 ```
 
-> skill 装到别处：`FIGMA_SKILL_DIR=... bash scripts/install.sh`。
-> `manifest.json` 由构建从端口段常量生成 —— 不要手改，改了会和 `config.ts` 漂移。
+> skill 装到别处：`FIGMA_SKILL_DIR=... bash scripts/install.sh`。`manifest.json` 由构建从端口段常量生成 —— 不要手改，改了会和 `config.ts` 漂移。
 
 ### 2. 在 Figma 里导入插件
 
 这一步没法脚本化，Figma 只认手动导入，**装完一次就不用再管**：
 
-Figma **桌面版** → `Plugins` → `Development` → `Import plugin from manifest...`
-选择 `packages/plugin/manifest.json`。
+Figma **桌面版** → `Plugins` → `Development` → `Import plugin from manifest...`，选择 `packages/plugin/manifest.json`。
 
 导入后在 `Plugins → Development → Figma CLI Bridge` 运行。插件面板会显示连接状态。
 
-> 更新后插件代码可能变了，**关掉插件窗口重开**即可；
-> **只有 `manifest.json` 变了（端口段调整）才必须重新 Import** —— Figma 在应用级缓存插件文件。
+> 更新后插件代码可能变了，**关掉插件窗口重开**即可；**只有 `manifest.json` 变了（端口段调整）才必须重新 Import** —— Figma 在应用级缓存插件文件。
 
 验证：
 
@@ -86,9 +82,10 @@ figma-cli status
 
 ```bash
 figma-cli ctx                      # 看用户选中了什么
-figma-cli tree --depth 3           # 读结构
+figma-cli plan 1:3635              # 还原一个页面前的一站式调研
+figma-cli tree --depth 3           # 只要结构
 figma-cli image 1:3635             # 导出截图
-figma-cli vars                     # design token
+figma-cli vars --used-by 1:3635    # 这个子树用到的 design token
 ```
 
 daemon 会在第一条命令时自动拉起并常驻，不需要手动管理。
@@ -118,12 +115,15 @@ daemon 会在第一条命令时自动拉起并常驻，不需要手动管理。
 | `figma-cli docs` | `list_documents` | 列出已连接的 Figma 文档 |
 | `figma-cli use <docId>` | `select_document` | 多文档时指定目标 |
 | `figma-cli ctx` | `get_current_context` | 文件/页面/当前选中项 —— **入口** |
-| `figma-cli tree [id]` | `get_node_tree` | 分层展开结构 |
+| `figma-cli plan [id]` | `plan_page` | 还原前的一站式调研：结构 + 组件 + token + 切图清单 + 文案 + 走查 |
+| `figma-cli tree [id...]` | `get_node_tree` | 分层展开结构，可一次给多个根 |
 | `figma-cli find <关键词>` | `search_nodes` | 按名称/类型定位 |
 | `figma-cli node <id>...` | `get_node_detail` | 完整属性 |
 | `figma-cli text [id]` | `get_text_content` | 抽取全部文案 |
 | `figma-cli image <id>` | `get_node_image` | 导出 PNG（给模型看的截图） |
 | `figma-cli export <id...>` | `export_assets` | 切图：PNG/JPG/SVG/PDF、多倍率、落到项目目录 |
+| `figma-cli lint [id]` | `lint_design` | 设计走查：裸色值、裸字号、被 detach 的实例、不在刻度表里的间距… |
+| `figma-cli css <id>` | `get_node_css` | Auto Layout → flex CSS 的机械翻译 |
 | `figma-cli vars` | `get_variables` | 变量集合与各 mode 的值 |
 | `figma-cli styles` | `get_styles` | Paint / Text / Effect / Grid |
 | `figma-cli components` | `get_components` | 组件与变体清单 |
@@ -208,26 +208,20 @@ CLI 首次执行时自动 spawn detached 把它拉起来（约 0.4s），之后�
 
 记号约定：`$name` 是**变量**（variable），`@name` 是**样式**（style）。
 
-**核心规则：能还原成 token 引用的，绝不输出原始值。**
-出现 `$` 或 `@` 时，生成的代码必须引用对应 token，不要硬编码字面值 —— 这条规则同时写进了
-`get_node_tree` 的 tool 描述里，模型读到输出时就知道该怎么处理。
+**核心规则：能还原成 token 引用的，绝不输出原始值。** 出现 `$` 或 `@` 时，生成的代码必须引用对应 token，不要硬编码字面值 —— 这条规则同时写进了 `get_node_tree` 的 tool 描述里，模型读到输出时就知道该怎么处理。
 
-早期版本用的是一种自研的紧凑 DSL（一行一个节点），比 YAML 还省约一半 token。换掉的理由是
-**通用格式不需要额外解释**：YAML 谁都认得，模型不必先读一段图例才能读懂输出，下游也能直接
-`yq` / `ruby -ryaml` 处理。省下来的那点 token 抵不过一次误读的代价。
+**不自造紧凑 DSL**，哪怕一行一个节点的自研格式还能再省约一半 token：通用格式不需要额外解释 —— YAML 谁都认得，模型不必先读一段图例才能读懂输出，下游也能直接 `yq` / `ruby -ryaml` 处理。省下来的那点 token 抵不过一次误读的代价。
 
-省 token 的手段因此只剩两个，都用足了：**无意义的字段一律不写**（默认值、Auto Layout 流内的
-坐标、与内容重复的图层名…），**短结构走 flow 风格**（`{mode: vertical, gap: 16}` 而不是三行）。
+省 token 的手段因此只剩两个，都用足了：**无意义的字段一律不写**（默认值、Auto Layout 流内的坐标、与内容重复的图层名…），**短结构走 flow 风格**（`{mode: vertical, gap: 16}` 而不是三行）。
 
-引号规则是保守的：只要含有 `:`、`#`、`@` 等 YAML 保留字符就加引号。节点 id 尤其重要 ——
-`12:34` 在 YAML 1.1 解析器里会被读成六十进制数字 754。
+引号规则是保守的：只要含有 `:`、`#`、`@` 等 YAML 保留字符就加引号。节点 id 尤其重要 —— `12:34` 在 YAML 1.1 解析器里会被读成六十进制数字 754。
 
 ### 2. 插件侧裁剪，Server 侧格式化
 
 - **插件侧**只做字段白名单裁剪，回传精简的中间 JSON（省 WS 带宽，避开大对象序列化开销）
 - **daemon 侧**负责把中间 JSON 转成 YAML 文本
 
-理由很实际：插件每改一行都要重新 build 并在 Figma 里重载，迭代很慢；而输出格式恰恰是最需要反复调试的部分。放在 daemon 侧，`npm run build && figma stop` 就生效。
+理由很实际：插件每改一行都要重新 build 并在 Figma 里重载，迭代很慢；而输出格式恰恰是最需要反复调试的部分。放在 daemon 侧，`npm run build:server && figma-cli stop` 就生效。
 
 ### 3. 上下文预算是第一约束
 
@@ -270,7 +264,7 @@ getAvailableLibraryVariableCollectionsAsync()   // 集合名 + libraryName + key
 
 ### 5. 图像作为核心能力
 
-`exportAsync` → PNG → base64 → 落盘，让模型能"看见"设计稿，也能在生成代码后自检还原度。
+`exportAsync` → PNG → base64 → 落盘，让模型能「看见」设计稿，也能在生成代码后自检还原度。
 
 - **必须分片**：几 MB 的 base64 单条 WS 消息不稳，协议里带 `chunkIndex/total`
 - **必须限尺寸**：默认 scale=1、长边上限 ~1500px，超出自动降采样。Claude 会把图片缩到约 1.15M 像素，传更大纯粹浪费 token 和时间
@@ -296,7 +290,7 @@ getAvailableLibraryVariableCollectionsAsync()   // 集合名 + libraryName + key
 
 7. **写了 `localhost` 就必须双栈监听。** `localhost` 在不同环境下解析成 `::1` 或 `127.0.0.1`，server 只绑一个的话会出现「server 明明在跑、`/health` 手动 curl 也通、插件就是连不上」。所以 server 在同一端口上同时绑 `127.0.0.1` 和 `::1`，共用一个 `WebSocketServer`（`noServer` 模式 + 各自转交 upgrade）。
 
-8. **建议用 Figma 桌面版。** 从 https 页面连 `ws://localhost` 依赖"localhost 属于 potentially trustworthy origin"这条豁免 —— Chrome 支持，Safari 不保证。桌面版是 Electron，行为稳定。
+8. **建议用 Figma 桌面版。** 从 https 页面连 `ws://localhost` 依赖「localhost 属于 potentially trustworthy origin」这条豁免 —— Chrome 支持，Safari 不保证。桌面版是 Electron，行为稳定。
 
 9. **不做鉴权，靠只读兜底。** localhost WebSocket 严格说不是安全边界 —— 本机上的任何进程都能连上端口读设计稿。早期版本加过配对 token，但它明文躺在 `~/.figma-cli/token`，能连端口的进程同样能读这个文件，等于没加。v1 全部接口只读、不出网，风险面就是「本机已被攻破时能多读一份设计稿」，不值得为它付配对成本。**v2 引入写操作时必须重新评估**，那时候的风险是别人能改你的稿子。
 
@@ -312,8 +306,8 @@ getAvailableLibraryVariableCollectionsAsync()   // 集合名 + libraryName + key
 figma-cli/
 ├─ packages/
 │  ├─ shared/     协议类型定义（两端共用）
-│  ├─ server/     daemon + WS Hub + tools 注册表 + YAML 序列化 + cli.ts 前端
-│  └─ plugin/     manifest.json + code.ts（沙箱）+ ui.html/ui.ts
+│  ├─ server/     daemon + WS Hub + tools 注册表 + YAML 序列化 + 折叠/走查/CSS/plan + cli.ts 前端
+│  └─ plugin/     manifest.template.json（构建生成 manifest.json）+ code.ts（沙箱）+ ui.html/ui.ts
 ├─ skills/figma-cli/  给 AI 的使用说明（软链到 ~/.claude/skills/）
 │  └─ scripts/           svg2vd.sh + 内置的 Svg2Vector（lib/，只需 JRE 11+）
 └─ scripts/       install.sh 一键安装/更新 · smoke.mjs 全链路冒烟
@@ -329,7 +323,7 @@ figma-cli/
 - 写操作（创建/修改节点、变量 CRUD）
 - Dev Mode 深度集成
 - CI / 无头运行
-- 跨文件 Library 的完整导出
+- Library 变量的批量镜像同步（`--values` 能逐个 import 出值，但没有增量与缓存，几百个变量就很慢）
 - 多客户端并存下的 daemon 抢占（当前是先到先得，后来的复用同一个）
 - 任意 JS 执行（`figma_execute` 式的逃生舱）—— 强大但不可控，不进 v1
 

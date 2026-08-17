@@ -44,7 +44,7 @@ import {
   foldIcon,
   foldSystem,
   isEmptyDiff,
-  isSystemChrome,
+  isSystemInset,
   structureHash,
   type FoldOptions,
   type IconFold,
@@ -54,7 +54,7 @@ import {
 export interface SerializeOptions {
   /** full 会带上 token 的解析值、stroke、effect 细节 */
   detail: 'compact' | 'full';
-  /** 结构折叠开关，省略时用默认（图标 / 系统 chrome / 同构兄弟全折叠） */
+  /** 结构折叠开关，省略时用默认（图标 / 系统控件 / 同构兄弟全折叠） */
   fold?: Partial<FoldOptions>;
 }
 
@@ -335,12 +335,12 @@ export function serializeNodes(roots: NodeInfo[], opts: SerializeOptions): strin
 /**
  * 一个节点渲染成什么：折叠成一行，还是完整展开。
  *
- * 系统 chrome 排在最前面 —— 即使 rootId 直指状态栏本身也照样折叠，
+ * 系统控件排在最前面 —— 即使 rootId 直指状态栏本身也照样折叠，
  * 想看内部结构就显式加 --expand-system。这和实例「直指就展开」的规则不同，
  * 因为对状态栏来说，展开几乎总是错的选择。
  */
 function renderNode(node: NodeInfo, parent: NodeInfo | undefined, ctx: Ctx): YamlValue {
-  if (isSystemChrome(node, ctx.fold)) return flow(systemFields(node, parent, ctx));
+  if (isSystemInset(node, ctx.fold)) return flow(systemFields(node, parent, ctx));
   const icon = foldIcon(node, ctx.fold, (paints) => formatPaints(paints, ctx));
   if (icon) return flow(iconFields(node, icon, parent, ctx));
   return nodeValue(node, parent, ctx);
@@ -372,11 +372,11 @@ function iconFields(
   return f.build();
 }
 
-/** 状态栏这类：只留还原容器需要的最小信息，外加可直接喂给 export 的 id。 */
+/** 状态栏这类：只留判断 inset 需要的最小信息，外加可直接喂给 export 的 id。 */
 function systemFields(node: NodeInfo, parent: NodeInfo | undefined, ctx: Ctx): Entry[] {
   const fold = foldSystem(node);
   const f = new Fields();
-  f.set('type', 'SystemChrome');
+  f.set('type', 'SystemInset');
   f.set('of', fold.of);
   f.set('id', node.id);
   if (fold.size) f.set('size', flow(fold.size));
@@ -399,7 +399,7 @@ function systemFields(node: NodeInfo, parent: NodeInfo | undefined, ctx: Ctx): E
       ),
     );
   }
-  f.set('hint', '系统组件，建议整体切图或交给系统，不要逐节点还原');
+  f.set('hint', '系统控件，由系统绘制：不要还原成 UI，按平台规则预留 inset（Android: WindowInsets）');
   return f.build();
 }
 
@@ -437,7 +437,7 @@ function diffFields(diff: NodeDiff): Entry[] {
 }
 
 /**
- * 子节点列表：先折叠图标 / 系统 chrome，再折叠结构同构的相邻兄弟。
+ * 子节点列表：先折叠图标 / 系统控件，再折叠结构同构的相邻兄弟。
  *
  * 折叠后每个原始 id 仍然在输出里 —— `sameAs` 行带着自己的 id，
  * 拿去 export / node 照样能用。
@@ -515,7 +515,13 @@ function nodeValue(node: NodeInfo, parent: NodeInfo | undefined, opts: Ctx): Ent
   if (node.visible === false) f.set('hidden', true);
   if (node.locked) f.set('locked', true);
 
-  if (node.w !== undefined && node.h !== undefined) f.set('size', flow([node.w, node.h]));
+  if (node.w !== undefined && node.h !== undefined) {
+    f.set('size', flow([node.w, node.h]));
+    // size 是**旋转前**的。`{size: [42, 0], rotate: -90}` 视觉上是一条 1×42 的竖线，
+    // 照着 size 写就写成横线了 —— 这类换算宁可这里多一行，也不能让下游脑内旋转
+    const visual = rotatedBox(node);
+    if (visual) f.set('visual', flow(visual));
+  }
 
   // 相对本次 root 的绝对坐标。跨四层累加 pos 去算「这个红点贴在哪一行」
   // 是这套流程里最容易静默出错的一步，而 Figma 本来就知道答案
@@ -715,7 +721,10 @@ function formatPaints(paints: PaintInfo[] | undefined, opts: SerializeOptions): 
 }
 
 function formatPaint(paint: PaintInfo, opts: SerializeOptions): string {
-  const suffix = paint.opacity !== undefined ? `@${paint.opacity}` : '';
+  // 多层填充在输出里是 `$token + #000000@0.2` 这样用 + 连起来的。混合模式不写出来的话，
+  // 下游只能假设 NORMAL 自己算最终色 —— 算错一位也看不出来，直接进交付物
+  const blend = paint.blendMode ? `(${paint.blendMode.toLowerCase()})` : '';
+  const suffix = (paint.opacity !== undefined ? `@${paint.opacity}` : '') + blend;
 
   switch (paint.kind) {
     case 'solid':
@@ -725,9 +734,9 @@ function formatPaint(paint: PaintInfo, opts: SerializeOptions): string {
       return `${paint.gradientType?.toLowerCase() ?? 'gradient'}(${stops})${suffix}`;
     }
     case 'image':
-      return `<image${paint.scaleMode ? `:${short(paint.scaleMode)}` : ''}>`;
+      return `<image${paint.scaleMode ? `:${short(paint.scaleMode)}` : ''}>${blend}`;
     case 'video':
-      return '<video>';
+      return `<video>${blend}`;
     default:
       return '<paint>';
   }
@@ -771,6 +780,28 @@ function formatPadding(pad: [number, number, number, number]): Flow | number {
   if (t === r && r === b && b === l) return t;
   if (t === b && r === l) return flow([t, r]);
   return flow([t, r, b, l]);
+}
+
+/**
+ * 旋转后的视觉包围盒。
+ *
+ * Figma 的 width/height 是本地坐标系的、旋转前的尺寸。矩形转 θ 之后的外接盒是
+ * |w·cosθ| + |h·sinθ| × |w·sinθ| + |h·cosθ| —— 纯几何，不用问插件。
+ * 只在和原尺寸差得出来（≥0.5）时才写，正交旋转的正方形不会多这一行。
+ */
+function rotatedBox(node: NodeInfo): [number, number] | undefined {
+  if (node.rotation === undefined || node.w === undefined || node.h === undefined) return undefined;
+  const rad = (node.rotation * Math.PI) / 180;
+  const cos = Math.abs(Math.cos(rad));
+  const sin = Math.abs(Math.sin(rad));
+  const w = round2(node.w * cos + node.h * sin);
+  const h = round2(node.w * sin + node.h * cos);
+  if (Math.abs(w - node.w) < 0.5 && Math.abs(h - node.h) < 0.5) return undefined;
+  return [w, h];
+}
+
+function round2(value: number): number {
+  return Math.round(value * 100) / 100;
 }
 
 /** 枚举值缩写：MIN/MAX/CENTER/SPACE_BETWEEN… 全大写太占 token */
@@ -859,7 +890,7 @@ export function serializeStats(stats: NodeStat[]): string {
         f.set('descendants', stat.descendants);
         f.set('depth', stat.depth);
         if (stat.instance) f.set('instance', true);
-        f.set('systemChrome', stat.systemChrome);
+        f.set('systemInset', stat.systemInset);
         return flow(f.build());
       }),
     ],
@@ -1002,6 +1033,14 @@ export function serializePlan(input: {
         item.set('size', Array.isArray(asset.size) ? flow(asset.size) : asset.size);
         item.set('color', asset.color);
         if (asset.colors) item.set('colors', flow(asset.colors));
+        // 「SVG 还是位图」必须能从这里读出来，否则只能一张张导出来看图
+        item.set('kind', asset.kind);
+        if (asset.vector === false) {
+          item.set('vector', false);
+          item.set('why', asset.why);
+        } else if (asset.shapes !== undefined) {
+          item.set('shapes', asset.shapes);
+        }
         if (asset.unbound) item.set('warn', 'unbound-color');
         return flow(item.build());
       }),
@@ -1073,7 +1112,7 @@ export function serializeMatches(matches: NodeMatch[], total: number): string {
   return toYaml(f.build());
 }
 
-export function serializeTextItems(items: TextItem[], truncated: boolean): string {
+export function serializeTextItems(items: TextItem[], truncated: boolean, total?: number): string {
   const f = new Fields();
   f.set(
     'texts',
@@ -1086,7 +1125,15 @@ export function serializeTextItems(items: TextItem[], truncated: boolean): strin
       return flow(item.build());
     }),
   );
-  if (truncated) f.set('truncated', '已截断，可用 limit 调整');
+  // 差了几条是能不能收工的唯一判据。只说「已截断」等于让下游自己猜
+  if (truncated) {
+    f.set(
+      'truncated',
+      total === undefined
+        ? '已截断，可用 limit 调整'
+        : `共 ${total} 条，只出了 ${items.length} 条，用 --limit ${total} 取全`,
+    );
+  }
   return toYaml(f.build());
 }
 

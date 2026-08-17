@@ -26,7 +26,7 @@ export interface FoldOptions {
   dedupeScope: 'siblings' | 'document';
   /** 判定为图标的尺寸上限 */
   iconMaxSize: number;
-  /** 图层名是不是系统 chrome */
+  /** 图层名是不是系统控件 */
   isSystem: (name: string) => boolean;
 }
 
@@ -141,7 +141,63 @@ export function foldIcon(
   return fold;
 }
 
-// ================================================================ 系统 chrome
+// ================================================================ 切图形态判定
+
+export interface GraphicKind {
+  /** glyph = 单色矢量字形；multicolor = 多色矢量；raster = 矢量表达不了，只能出位图 */
+  kind: 'glyph' | 'multicolor' | 'raster';
+  /** 能不能转成 VectorDrawable（Android）/ 干净的 SVG */
+  vector: boolean;
+  /** vector: false 的原因 */
+  why?: string;
+  /** 绘图叶子数，约等于 SVG 里的 path 数。1 = 单路径字形 */
+  shapes: number;
+}
+
+/**
+ * 这个切图目标能不能矢量化。
+ *
+ * 「SVG 还是 PNG」是切图环节唯一一个必须先做的判断，而原来的输出回答不了它 ——
+ * `colors: ["#d9d9d9", "<image:fill>"]` 只说明「有位图填充」，不说明这是一个
+ * VectorDrawable 表达得了的简单图形，还是一张带高光和立体阴影的 3D 插画。
+ * 判断不了就只能一个个导出来看图，而截图是这套流程里最贵的操作。
+ *
+ * 判定只看两件 VectorDrawable 确实表达不了的东西：位图填充和模糊。
+ * 渐变、描边、圆角 Svg2Vector 都能转，不算进来。
+ */
+export function classifyGraphic(node: NodeInfo): GraphicKind {
+  let raster: string | undefined;
+  let shapes = 0;
+  const colors = new Set<string>();
+
+  const walk = (current: NodeInfo): void => {
+    for (const paint of [...(current.fills ?? []), ...(current.strokes ?? [])]) {
+      if (paint.visible === false) continue;
+      if (paint.kind === 'image' || paint.kind === 'video' || paint.kind === 'pattern') {
+        raster ??= `${paint.kind}-fill`;
+      } else if (paint.kind === 'solid' && paint.color) {
+        colors.add(paint.token?.name ?? paint.color);
+      }
+    }
+    for (const effect of current.effects ?? []) {
+      if (effect.visible === false) continue;
+      if (effect.type === 'LAYER_BLUR' || effect.type === 'BACKGROUND_BLUR') raster ??= 'blur';
+    }
+
+    const children = current.children ?? [];
+    if (children.length === 0) {
+      // 有可见涂装的叶子才算一个形状；空 Frame / 定位用的 Group 不算
+      if ((current.fills?.length ?? 0) + (current.strokes?.length ?? 0) > 0) shapes++;
+    }
+    for (const child of children) walk(child);
+  };
+  walk(node);
+
+  if (raster) return { kind: 'raster', vector: false, why: raster, shapes };
+  return { kind: colors.size > 1 ? 'multicolor' : 'glyph', vector: true, shapes };
+}
+
+// ================================================================ 系统控件
 
 export interface SystemFold {
   of: string;
@@ -154,8 +210,8 @@ export interface SystemFold {
   exportable: { name: string; id: string; size?: [number, number] }[];
 }
 
-/** 名字或主组件名命中系统 chrome 名单。 */
-export function isSystemChrome(node: NodeInfo, opts: FoldOptions): boolean {
+/** 名字或主组件名命中系统控件名单。 */
+export function isSystemInset(node: NodeInfo, opts: FoldOptions): boolean {
   if (!opts.system) return false;
   const names = [node.name, node.component?.componentSetName, node.component?.mainComponentName];
   return names.some((name) => name !== undefined && opts.isSystem(name));

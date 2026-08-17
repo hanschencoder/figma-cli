@@ -93,7 +93,7 @@ const CARD = {
           fills: [{ kind: 'solid', color: '#1E1E1E', token: { name: 'color/text-primary' } }] },
       ],
     },
-    // 系统 chrome：应折叠成一行 type: SystemChrome
+    // 系统控件：应折叠成一行 type: SystemInset
     {
       id: '12:50', name: 'StatusBar 状态栏', type: 'INSTANCE', w: 340, h: 34, abs: [0, 0],
       layout: { mode: 'HORIZONTAL', padding: [8, 20, 7, 20], primaryAlign: 'SPACE_BETWEEN' },
@@ -111,6 +111,26 @@ const CARD = {
       children: [
         { id: '12:71', name: 'Arc', type: 'VECTOR', w: 20, h: 20,
           fills: [{ kind: 'solid', color: '#0A84FF', token: { name: 'color/brand' } }] },
+      ],
+    },
+    // 位图填充的图标：VectorDrawable 表达不了，assets 必须标出来，
+    // 否则下游只能一张张导出来看图才敢决定 SVG 还是 PNG
+    {
+      id: '12:80', name: '金币', type: 'FRAME', w: 42, h: 42, abs: [260, 300],
+      children: [
+        { id: '12:81', name: 'coin', type: 'RECTANGLE', w: 42, h: 42,
+          fills: [{ kind: 'solid', color: '#d9d9d9' }, { kind: 'image', scaleMode: 'FILL' }] },
+      ],
+    },
+    // 旋转的分隔线：size 是旋转前的，视觉上是竖线
+    { id: '12:90', name: 'Line 4', type: 'LINE', w: 42, h: 0, abs: [170, 300], rotation: -90,
+      strokes: [{ kind: 'solid', color: '#e5e5e5' }] },
+    // 叠加填充：混合模式不写出来，下游只能假设 NORMAL 自己算最终色
+    {
+      id: '12:95', name: '今天', type: 'FRAME', w: 40, h: 20, abs: [220, 300],
+      fills: [
+        { kind: 'solid', color: '#FFBE0A', token: { name: '主题色/Yellow/Primary' } },
+        { kind: 'solid', color: '#000000', opacity: 0.2, blendMode: 'MULTIPLY' },
       ],
     },
     // 结构同构的相邻兄弟：第一个完整展开，其余折叠成 sameAs
@@ -191,6 +211,8 @@ const RESPONSES = {
       { id: '12:37', name: 'title', text: 'AirPods Pro' },
       { id: '12:38', name: 'price', text: '¥1,899' },
     ],
+    total: 5,
+    truncated: true,
   }),
   'ds.variables': () => ({
     collections: [
@@ -331,7 +353,7 @@ function connectFakePlugin(port) {
               // 同名图层：文件名必须自动去重，不能互相覆盖
               { id: '12:36', name: 'icon / search', type: 'FRAME', width: 24, height: 24, settings: [{ format: 'SVG' }] },
               // 没配导出设置：走默认 PNG @1x
-              { id: '12:39', name: 'Plain Frame', type: 'FRAME', width: 48, height: 48, settings: [] },
+              { id: '12:39', name: 'Plain Frame', type: 'FRAME', width: 48, height: 48, settings: [], hasText: true },
               // 实例内部节点：图层名没意义，文件名必须回退到主组件名（中文要保住）
               { id: 'I12:40;64:2356', name: 'Vector', type: 'VECTOR', width: 24, height: 24,
                 component: '文件2', settings: [{ format: 'SVG' }],
@@ -469,8 +491,8 @@ async function main() {
         !treeBody.includes('12:41'),
     );
     check(
-      '系统 chrome 折叠成一行',
-      treeBody.includes('type: SystemChrome') &&
+      '系统控件折叠成一行',
+      treeBody.includes('type: SystemInset') &&
         treeBody.includes('exportable: [{name: 右侧图标组, id: "12:52"') &&
         !treeBody.includes('12:53'),
     );
@@ -498,6 +520,14 @@ async function main() {
         name: 'get_node_tree',
         arguments: { docId: DOC_ID, stat: true },
       }),
+    );
+    check(
+      '旋转节点给出视觉包围盒',
+      treeBody.includes('rotate: -90') && treeBody.includes('visual: [0, 42]'),
+    );
+    check(
+      '叠加填充带上混合模式',
+      treeBody.includes('$主题色/Yellow/Primary + #000000@0.2(multiply)'),
     );
     check('--stat 只出结构统计', statBody.includes('descendants: 47') && !statBody.includes('AirPods'));
 
@@ -534,6 +564,11 @@ async function main() {
     check('lint 抓到未绑样式的裸字号', lintBody.includes('unbound-font'));
     check('lint 给出可读层级路径', lintBody.includes('path: ProductCard › '));
 
+    const textBody = extractText(
+      await client.request('tools/call', { name: 'get_text_content', arguments: { docId: DOC_ID } }),
+    );
+    check('text 截断时说清差了几条', textBody.includes('共 5 条，只出了 2 条'));
+
     const planBody = extractText(
       await client.request('tools/call', { name: 'plan_page', arguments: { docId: DOC_ID } }),
     );
@@ -546,6 +581,20 @@ async function main() {
     );
     check('plan 聚合组件复用信号', planBody.includes('{of: 侧边栏') && planBody.includes('count: 3'));
     check('plan 行数在预算内', planBody.split('\n').length <= 150);
+    check(
+      'plan 标出不可矢量化的切图',
+      planBody.includes('kind: raster') && planBody.includes('vector: false') &&
+        planBody.includes('why: image-fill'),
+    );
+    check('plan 标出可矢量化图标的形状数', planBody.includes('kind: glyph') && planBody.includes('shapes: 1'));
+    // structure 段里状态栏折叠成一行是对的（那是「这里要留 inset」的信号）；
+    // 但它不该再出现在 components / assets / text —— 那三段是「我要写哪些代码」
+    const planTextLine = planBody.split('\n').find((line) => line.startsWith('text: ')) ?? '';
+    check(
+      'plan 不把状态栏内部件算进 components / text',
+      !planBody.includes('{of: StatusBar') && !planTextLine.includes('18:30'),
+      planTextLine,
+    );
     if (process.env.SMOKE_SHOW_PLAN) console.log(indent(planBody));
 
     // CLI 前端走同一个 daemon 的 HTTP /call，验证两个前端结果一致。
@@ -611,10 +660,23 @@ async function main() {
       stdout.includes('fill="currentColor"') && stdout.includes('fill="red"'),
     );
     check('CLI export --stdout 给出该设哪个 token', stdout.includes('token: $color/text-primary'));
+    check('CLI export 对含文字的切图目标报警', bySettings.includes('含文本子节点'));
+
+    const outD = mkdtempSync(join(tmpdir(), 'figma-smoke-'));
+    await cli([
+      'export', '12:39=ic_plain', '--format', 'SVG',
+      '--out', relative(process.cwd(), outD), '--doc-id', DOC_ID,
+    ]);
+    check(
+      'CLI export <id>=<名字> 直接定文件名（下划线不被削掉）',
+      readdirSync(outD).includes('ic_plain.svg'),
+      readdirSync(outD).sort().join(' '),
+    );
 
     rmSync(outA, { recursive: true, force: true });
     rmSync(outB, { recursive: true, force: true });
     rmSync(outC, { recursive: true, force: true });
+    rmSync(outD, { recursive: true, force: true });
 
     ws.close();
   } finally {

@@ -17,7 +17,7 @@ import {
   MAX_IMAGE_DIMENSION,
   Method,
   STATE_DIR,
-  systemChromeMatcher,
+  systemInsetMatcher,
   type ExportFormat,
   type ExportSpec,
   type ExportTarget,
@@ -36,6 +36,7 @@ import {
   collectSpacing,
   collectTextStyles,
   collectTexts,
+  countNodes,
   LINE_BUDGET,
   PLAN_SECTIONS,
   pruneTree,
@@ -74,7 +75,8 @@ export const OUTPUT_LEGEND = `
   children              子节点，同样的结构
 三种折叠（原始 id 都还在，可以直接拿去 export / node）：
   {type: Icon, ...}          原子图标，矢量几何已省。要看细节加 --expand-icons
-  {type: SystemChrome, ...}  状态栏这类系统组件，**不要逐节点还原，整体切图**
+  {type: SystemInset, ...}   状态栏/导航栏/键盘这类系统控件，**不要还原成 UI，
+                             改为按平台规则预留 system insets**
   {sameAs: <id>, diff: {...}}  和前面那个节点结构相同，只列差异。
                              出现它就说明代码里应该是同一个组件的多次复用
 值里的两个记号：
@@ -165,7 +167,7 @@ const foldArgs = {
   expandSystem: z
     .boolean()
     .optional()
-    .describe('展开状态栏 / Home Indicator 这类系统组件。默认折叠成一行'),
+    .describe('展开状态栏 / Home Indicator 这类系统控件。默认折叠成 type: SystemInset 一行'),
   dedupe: z
     .boolean()
     .optional()
@@ -208,7 +210,7 @@ function foldOptions(args: Record<string, unknown>): FoldOptions {
     dedupe: args.dedupe !== false,
     dedupeScope: (args.dedupeScope as 'siblings' | 'document' | undefined) ?? 'siblings',
     iconMaxSize: (args.iconMaxSize as number | undefined) ?? 64,
-    isSystem: systemChromeMatcher(loadUserConfig().systemComponents ?? []),
+    isSystem: systemInsetMatcher(loadUserConfig().systemComponents ?? []),
   };
 }
 
@@ -462,11 +464,20 @@ export function createTools(ctx: ToolContext): ToolDef[] {
       description:
         '拿单个或少量节点的全部属性：描边、阴影、约束、富文本分段、组件属性、' +
         '以及绑定变量的解析值（$name(值) 形式）。\n' +
-        '适合在 tree 之后对关键节点做精读。输出格式见 tree。',
+        '适合在 tree 之后对关键节点做精读。输出格式见 tree。\n' +
+        '**`--with-children` 只展开一层**，再往下还是 `more: true`。' +
+        '目标是「一个可复用组件」时别走这条阶梯，直接 `--depth 8` 一次拿全。',
       schema: {
         ...docIdArg,
         ids: z.array(z.string()).min(1).describe('节点 id，可给多个'),
-        withChildren: z.boolean().optional().describe('连带一层子节点'),
+        withChildren: z.boolean().optional().describe('连带一层子节点，等价于 --depth 1'),
+        depth: z
+          .number()
+          .int()
+          .min(0)
+          .max(12)
+          .optional()
+          .describe('连带几层子节点，默认 0（只出自身）。给了它 --with-children 失效'),
       },
       positional: ['ids'],
       variadic: true,
@@ -476,6 +487,7 @@ export function createTools(ctx: ToolContext): ToolDef[] {
           const { result } = await hub.request(target, Method.NodeDetail, {
             ids: args.ids as string[],
             withChildren: args.withChildren as boolean | undefined,
+            depth: args.depth as number | undefined,
           });
           // 精读命令不折叠：使用者点名要看这几个节点，把图标折成一行就本末倒置了
           const body = serializeNodes(result.nodes, {
@@ -512,7 +524,7 @@ export function createTools(ctx: ToolContext): ToolDef[] {
             includeHidden: args.includeHidden as boolean | undefined,
             limit: args.limit as number | undefined,
           });
-          return ok(serializeTextItems(result.items, result.truncated ?? false));
+          return ok(serializeTextItems(result.items, result.truncated ?? false, result.total));
         }),
     },
 
@@ -587,7 +599,10 @@ export function createTools(ctx: ToolContext): ToolDef[] {
         '这个是**给工程用**的切图（原始尺寸、按图层名命名、落到 --out 指定的目录）。\n' +
         '不指定 --format 时，优先按设计师在 Figma 里配好的导出设置来 —— ' +
         '格式、倍率、文件名后缀都听设计稿的。\n' +
+        '**文件名可以直接在 id 上给**：`<id>=<名字>` —— 设计稿里叫「功能-钱币」的图层\n' +
+        '导出来就是 `ic_coin.svg`，省掉一轮 mv。和 svg2vd.sh 的 `<file.svg>=<id>` 对称。\n' +
         '典型用法：\n' +
+        '  export 12:34=ic_coin --format SVG --out ./src/assets/icons\n' +
         '  export 12:34 --format SVG --out ./src/assets/icons\n' +
         '  export 12:34 --format PNG --scales 1,2,3 --out ./assets\n' +
         '  export 8:12 --recursive --out ./assets   # 一个 Frame 下配了导出设置的图标全切出来\n' +
@@ -596,7 +611,10 @@ export function createTools(ctx: ToolContext): ToolDef[] {
         '这时自动回退到**主组件名**。',
       schema: {
         ...docIdArg,
-        ids: z.array(z.string()).min(1).describe('要导出的节点 id，可给多个'),
+        ids: z
+          .array(z.string())
+          .min(1)
+          .describe('要导出的节点 id，可给多个；写成 <id>=<名字> 可直接指定文件名'),
         out: z
           .string()
           .default('figma-exports')
@@ -646,7 +664,7 @@ export function createTools(ctx: ToolContext): ToolDef[] {
       run: async (args) =>
         guard(async () => {
           const target = router.resolve(args.docId as string | undefined);
-          const ids = args.ids as string[];
+          const { ids, names } = parseExportIds(args.ids as string[]);
           const format = args.format as ExportFormat | undefined;
           const scales = (args.scales as number[] | undefined) ?? [1];
           const useSettings = format ? false : (args.useSettings as boolean | undefined) ?? true;
@@ -718,7 +736,7 @@ export function createTools(ctx: ToolContext): ToolDef[] {
 
               const path = writeAsset(
                 dir,
-                assetName(item, spec, exported, used, args.asciiNames === true),
+                assetName(item, spec, exported, used, args.asciiNames === true, names.get(item.id)),
                 data,
               );
               if (!path) {
@@ -749,6 +767,17 @@ export function createTools(ctx: ToolContext): ToolDef[] {
                 ['files', files],
               ];
           if (failed.length > 0) summary.push(['failed', failed]);
+          // 切图里混进文字是个静默错误，跑到构建产物里才会被发现
+          const withText = planned.targets.filter((item) => item.hasText);
+          if (withText.length > 0) {
+            summary.push([
+              'warn',
+              withText.map(
+                (item) =>
+                  `${item.name} (${item.id}) 含文本子节点，多半是选到了外层容器，确认要切的是不是里面那个图标`,
+              ),
+            ]);
+          }
           if (planned.missing?.length) summary.push(['missing', planned.missing]);
           if (planned.truncated) summary.push(['truncated', '清点结果被截断，建议缩小范围']);
 
@@ -828,13 +857,13 @@ export function createTools(ctx: ToolContext): ToolDef[] {
 
           const shared = {
             root,
-            components: collectComponentUses(tree.roots),
+            components: collectComponentUses(tree.roots, fold),
             modes,
             colors,
             textStyles: collectTextStyles(styles.styles),
             spacing: collectSpacing(tree.roots, vars.collections),
             assets: collectAssets(tree.roots, fold, paintText),
-            texts: collectTexts(tree.roots),
+            texts: collectTexts(tree.roots, fold),
             findings,
             sections,
           };
@@ -843,20 +872,40 @@ export function createTools(ctx: ToolContext): ToolDef[] {
           let depth = (args.depth as number | undefined) ?? 3;
           let body = '';
           let trimmed = false;
+          let overBudget = false;
           for (;;) {
             body = serializePlan({
               ...shared,
               opts: { detail: 'compact', fold },
               structure: (root.children ?? []).map((child) => pruneTree(child, depth - 1, fold)),
             });
-            if (body.split('\n').length <= LINE_BUDGET || depth <= 1) break;
+            overBudget = body.split('\n').length > LINE_BUDGET;
+            if (!overBudget || depth <= 1) break;
             depth--;
             trimmed = true;
           }
 
+          // depth 1 的 structure 等于没有信息（几个 more: true 而已），它还挤占了
+          // 别的段的预算。这时候整段撤掉，把该跑的下一条命令直接给出来
+          let dropped = false;
+          if (overBudget && depth <= 1) {
+            dropped = true;
+            body = serializePlan({
+              ...shared,
+              opts: { detail: 'compact', fold },
+              structure: [],
+              sections: sections.filter((section) => section !== 'structure'),
+            });
+          }
+
+          const next = `figma-cli tree --root-id ${root.id} --depth 4`;
           return ok(
             body +
-              (trimmed ? note(`structure 超出行数预算，已降到 depth ${depth}`) : '') +
+              (dropped
+                ? note(`structure 超出行数预算已省略（后代 ${countNodes(root)} 个），结构单独跑：${next}`)
+                : trimmed
+                  ? note(`structure 超出行数预算，已降到 depth ${depth}；要更细就跑：${next}`)
+                  : '') +
               (tree.truncated ? note('子树超过扫描上限，聚合结果可能不全，加 --max-nodes') : ''),
           );
         }),
@@ -1132,25 +1181,46 @@ function specsFor(
  * 后缀优先用 Figma 里配的（设计师写了 "@2x" / "-dark" 就照抄），
  * 没配则按倍率补 @2x。重名时加序号，绝不静默覆盖。
  */
+/** `<id>=<名字>` 拆成 id 列表 + 文件名映射。Figma 的 id 里不会有 `=`，按第一个 `=` 切安全。 */
+function parseExportIds(raw: string[]): { ids: string[]; names: Map<string, string> } {
+  const ids: string[] = [];
+  const names = new Map<string, string>();
+  for (const item of raw) {
+    const eq = item.indexOf('=');
+    if (eq <= 0) {
+      ids.push(item);
+      continue;
+    }
+    const id = item.slice(0, eq);
+    ids.push(id);
+    const name = item.slice(eq + 1).trim();
+    if (name) names.set(id, name);
+  }
+  return { ids, names };
+}
+
 function assetName(
   target: ExportTarget,
   spec: ExportSpec,
   exported: NodeExportResult,
   used: Set<string>,
   ascii: boolean,
+  explicit?: string,
 ): string {
   // 实例内部节点（id 形如 "I1:28;64:2356"）的图层名基本是 "Vector" /
   // "Frame 2147223744"，sanitize 之后常常只剩个位数字 —— `2.svg` / `11064.svg`
   // 进不了项目。这类一律回退到主组件名，那才是设计师给这个图标起的名字
   const insideInstance = target.id.includes(';');
-  const candidates =
-    insideInstance && target.component
+  const candidates = explicit
+    ? [explicit]
+    : insideInstance && target.component
       ? [target.component, target.name, target.id]
       : [target.name, target.component, target.id];
   let base = '';
   for (const candidate of candidates) {
     const cleaned = sanitizeName(candidate ?? '', ascii);
-    if (cleaned && !/^\d+$/.test(cleaned)) {
+    // 纯数字的图层名（实例内部常见）不能当文件名；显式给的名字例外，那是使用者的决定
+    if (cleaned && (explicit !== undefined || !/^\d+$/.test(cleaned))) {
       base = cleaned;
       break;
     }
@@ -1177,7 +1247,8 @@ function assetName(
  * 于是产出 `2.svg`。默认保留 Unicode 字母数字，要纯 ASCII 就显式 --ascii-names。
  */
 function sanitizeName(name: string, ascii: boolean): string {
-  const keep = ascii ? /[^\w.@-]/g : /[^\p{L}\p{N}._@-]/gu;
+  // 下划线必须留：Android 的 res 名字（ic_coin）全靠它，去掉就成了 iccoin
+  const keep = ascii ? /[^\w.@-]/g : /[^\p{L}\p{N}_.@-]/gu;
   return name
     .trim()
     .replace(/[\/\\]+/g, '-')

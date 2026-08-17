@@ -189,8 +189,10 @@ export interface NodeTreeResult {
 
 export interface NodeDetailParams {
   ids: string[];
-  /** 是否连带一层子节点摘要 */
+  /** 是否连带一层子节点摘要。等价于 depth: 1 */
   withChildren?: boolean;
+  /** 连带几层子节点。给了它就以它为准，withChildren 失效 */
+  depth?: number;
 }
 export interface NodeDetailResult {
   nodes: NodeInfo[];
@@ -222,6 +224,8 @@ export interface NodeTextParams {
 }
 export interface NodeTextResult {
   items: TextItem[];
+  /** 命中的文本节点总数（不含被 includeHidden 过滤掉的）。items 少于它才是真截断 */
+  total?: number;
   truncated?: boolean;
 }
 
@@ -281,6 +285,11 @@ export interface ExportTarget {
    * 实例内部的节点图层名多半是 "Vector"，甚至只有 id —— 那种文件名进不了项目。
    */
   component?: string;
+  /**
+   * 子树里含 TEXT 节点。切图目标带文字基本都是选错了父节点 ——
+   * 这种错误要跑到 APK 里才看得出来，导出前必须点出来。
+   */
+  hasText?: true;
   /**
    * 子树里出现的纯色填充/描边。用于 --currentcolor：
    * 绑了 token 的色值可以安全换成 currentColor，裸色值不行（可能是有意的多色图标）。

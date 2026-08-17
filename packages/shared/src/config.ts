@@ -50,16 +50,18 @@ export const MAX_IMAGE_DIMENSION = 1500;
 export const STATE_DIR = '.figma-cli';
 
 /**
- * 系统 chrome 组件名单。
+ * 系统控件名单 —— 命中的子树折叠成 `type: SystemInset` 一行。
  *
- * 状态栏、Home Indicator、键盘这类东西**每一张移动端设计稿上都有**，
+ * 状态栏、导航栏、Home Indicator、键盘这类东西**每一张移动端设计稿上都有**，
  * 展开它们要花两百行换四个事实（容器高、padding、时间文案、图标组 id），
- * 而真实工程里这部分通常由系统或独立组件提供，根本不该由页面还原。
+ * 而它们由系统绘制、不该由页面还原 —— 落到代码里是一份 inset 预留
+ * （Android 的 WindowInsets / iOS 的 safe area），不是一堆节点。
+ * 折叠类型因此叫 SystemInset：名字直接说明它该变成什么。
  *
  * 匹配是「名字里包含其中一项」，大小写不敏感。用户可以在
  * `~/.figma-cli/config.json` 的 `systemComponents` 里追加。
  */
-export const SYSTEM_CHROME_NAMES: readonly string[] = [
+export const SYSTEM_INSET_NAMES: readonly string[] = [
   'statusbar',
   'status bar',
   '状态栏',
@@ -76,11 +78,11 @@ export const SYSTEM_CHROME_NAMES: readonly string[] = [
   '灵动岛',
 ];
 
-/** 生成一个「这个图层名算不算系统 chrome」的判定函数。 */
-export function systemChromeMatcher(
+/** 生成一个「这个图层名算不算系统控件」的判定函数。 */
+export function systemInsetMatcher(
   extra: readonly string[] = [],
 ): (name: string) => boolean {
-  const needles = [...SYSTEM_CHROME_NAMES, ...extra.map((n) => n.toLowerCase())];
+  const needles = [...SYSTEM_INSET_NAMES, ...extra.map((n) => n.toLowerCase())];
   return (name: string) => {
     const lower = name.toLowerCase();
     return needles.some((needle) => lower.includes(needle));

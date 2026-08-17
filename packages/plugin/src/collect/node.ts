@@ -612,7 +612,7 @@ function subtreeDepth(node: BaseNode, includeHidden: boolean, budget = { n: DESC
 export function collectStats(
   node: BaseNode,
   includeHidden: boolean,
-  isSystemChrome: (name: string) => boolean,
+  isSystemInset: (name: string) => boolean,
 ): NodeStat[] {
   if (!('children' in node)) return [];
   const out: NodeStat[] = [];
@@ -626,25 +626,25 @@ export function collectStats(
       depth: subtreeDepth(child, includeHidden),
     };
     if (child.type === 'INSTANCE') stat.instance = true;
-    const chrome = countSystemChrome(child, isSystemChrome, includeHidden);
-    if (chrome > 0) stat.systemChrome = chrome;
+    const chrome = countSystemInset(child, isSystemInset, includeHidden);
+    if (chrome > 0) stat.systemInset = chrome;
     out.push(stat);
   }
   return out;
 }
 
-function countSystemChrome(
+function countSystemInset(
   node: BaseNode,
-  isSystemChrome: (name: string) => boolean,
+  isSystemInset: (name: string) => boolean,
   includeHidden: boolean,
   budget = { n: DESCENDANT_CAP },
 ): number {
-  let count = isSystemChrome(node.name) ? 1 : 0;
+  let count = isSystemInset(node.name) ? 1 : 0;
   if (!('children' in node) || budget.n <= 0) return count;
   for (const child of (node as ChildrenMixin).children) {
     if (!includeHidden && 'visible' in child && !child.visible) continue;
     budget.n--;
-    count += countSystemChrome(child, isSystemChrome, includeHidden, budget);
+    count += countSystemInset(child, isSystemInset, includeHidden, budget);
   }
   return count;
 }

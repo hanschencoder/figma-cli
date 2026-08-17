@@ -14,7 +14,7 @@ import type {
   StyleInfo,
   VariableCollectionInfo,
 } from '@figma-cli/shared';
-import { foldIcon, isSystemChrome, type FoldOptions } from './fold.js';
+import { classifyGraphic, foldIcon, isSystemInset, type FoldOptions } from './fold.js';
 import { lineHeightPx, parseFontStyle } from './font.js';
 import type { LintFinding } from './lint.js';
 
@@ -49,7 +49,7 @@ export function pruneTree(node: NodeInfo, depth: number, fold: FoldOptions): Nod
 
   // 会被折叠成一行的节点不裁 —— 裁了反而变成 `more: true` 两行，
   // 而且状态栏的文案和可导出 id 就拿不到了
-  if (isSystemChrome(node, fold) || foldIcon(node, fold, () => undefined)) return copy;
+  if (isSystemInset(node, fold) || foldIcon(node, fold, () => undefined)) return copy;
 
   if (depth <= 0 || node.type === 'INSTANCE') {
     delete copy.children;
@@ -63,7 +63,7 @@ export function pruneTree(node: NodeInfo, depth: number, fold: FoldOptions): Nod
   return copy;
 }
 
-function countNodes(node: NodeInfo): number {
+export function countNodes(node: NodeInfo): number {
   let count = 0;
   for (const child of node.children ?? []) count += 1 + countNodes(child);
   return count;
@@ -81,10 +81,13 @@ export interface ComponentUse {
 }
 
 /** 组件复用信号：同一个 of 出现多次 → 代码里就该是同一个组件。 */
-export function collectComponentUses(roots: NodeInfo[]): ComponentUse[] {
+export function collectComponentUses(roots: NodeInfo[], fold: FoldOptions): ComponentUse[] {
   const byName = new Map<string, ComponentUse>();
 
   const walk = (node: NodeInfo): void => {
+    // 状态栏在 structure 里已经折成一行，它内部的 wifi/信号/5G 也不该出现在这里 ——
+    // 这几段是「我要写哪些代码」，而系统控件恰恰是**明确不该还原**的东西
+    if (isSystemInset(node, fold)) return;
     if (node.type === 'INSTANCE' && node.component) {
       const of = node.component.componentSetName ?? node.component.mainComponentName ?? node.name;
       const use: ComponentUse =
@@ -117,6 +120,11 @@ export interface AssetItem {
   color?: string;
   colors?: string[];
   unbound?: boolean;
+  /** 见 classifyGraphic —— 决定这张图走 SVG 还是位图 */
+  kind?: 'glyph' | 'multicolor' | 'raster';
+  vector?: false;
+  why?: string;
+  shapes?: number;
 }
 
 /** 可直接喂给 export 的切图清单。判定复用图标折叠那一套规则。 */
@@ -129,6 +137,7 @@ export function collectAssets(
   const seen = new Set<string>();
 
   const walk = (node: NodeInfo): void => {
+    if (isSystemInset(node, fold)) return;
     const icon = foldIcon(node, fold, paintText);
     if (icon) {
       // 同一个图标在页面上出现多次，切一次就够
@@ -139,16 +148,21 @@ export function collectAssets(
         if (icon.color) item.color = icon.color;
         if (icon.colors) item.colors = icon.colors;
         if (icon.unbound) item.unbound = true;
-        out.push(item);
+        out.push(withGraphic(item, node));
       }
       return;
     }
     if (node.exportable) {
-      out.push({
-        id: node.id,
-        name: node.name,
-        size: node.w !== undefined && node.h !== undefined ? [node.w, node.h] : 0,
-      });
+      out.push(
+        withGraphic(
+          {
+            id: node.id,
+            name: node.name,
+            size: node.w !== undefined && node.h !== undefined ? [node.w, node.h] : 0,
+          },
+          node,
+        ),
+      );
     }
     for (const child of node.children ?? []) walk(child);
   };
@@ -156,11 +170,26 @@ export function collectAssets(
   return out;
 }
 
+/** 切一张图之前必须知道的：它能不能矢量化。判断不了就只能靠导出来看图。 */
+function withGraphic(item: AssetItem, node: NodeInfo): AssetItem {
+  const g = classifyGraphic(node);
+  item.kind = g.kind;
+  if (!g.vector) {
+    item.vector = false;
+    item.why = g.why;
+  } else if (g.shapes > 0) {
+    item.shapes = g.shapes;
+  }
+  return item;
+}
+
 /** 页面文案，按出现顺序去重。 */
-export function collectTexts(roots: NodeInfo[]): string[] {
+export function collectTexts(roots: NodeInfo[], fold: FoldOptions): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
   const walk = (node: NodeInfo): void => {
+    // 状态栏的 "18:30" / "5G" / "100" 不是页面文案，进不了 strings.xml
+    if (isSystemInset(node, fold)) return;
     if (node.text) {
       const text = node.text.characters.trim();
       if (text && !seen.has(text)) {

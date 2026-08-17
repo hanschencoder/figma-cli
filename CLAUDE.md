@@ -28,46 +28,27 @@ npm run setup          # = bash scripts/install.sh，安装/更新 CLI 与 skill
 
 ## 约定
 
-**日志一律 stderr。** CLI 的 stdout 只输出 YAML，掺一个字节日志就让 `yq` 之类的下游
-管道解析失败。用 `logger.ts` 的 `log.*`，不要 `console.log`。
+**日志一律 stderr。** CLI 的 stdout 只输出 YAML，掺一个字节日志就让 `yq` 之类的下游管道解析失败。用 `logger.ts` 的 `log.*`，不要 `console.log`。
 
-**stdout 只有 YAML，不许掺一行别的。** 进度提示（如「daemon 已启动」）走 stderr，而且写成
-`# 注释` 形式；「已截断」「找不到这些 id」这类附注用 `note()` 追加成 YAML 注释行 —— 这样
-`figma-cli tree 2>&1 | yq` 也不会炸。help / usage 报错是例外，那是给人看的。
+**stdout 只有 YAML，不许掺一行别的。** 进度提示（如「daemon 已启动」）走 stderr，而且写成 `# 注释` 形式；「已截断」「找不到这些 id」这类附注用 `note()` 追加成 YAML 注释行 —— 这样 `figma-cli tree 2>&1 | yq` 也不会炸。help / usage 报错是例外，那是给人看的。
 
-**输出一律 YAML。** 序列化在 `server/src/yaml.ts`，自带一个最小 emitter（不引第三方）。
-引号规则保守：含 `:` `#` `@` 等保留字符就加引号 —— 节点 id `12:34` 不加引号会被 YAML 1.1
-解析器读成六十进制数字 754。省 token 靠「无意义字段不写」和「短结构走 flow」，不靠自造格式。
+**输出一律 YAML。** 序列化在 `server/src/yaml.ts`，自带一个最小 emitter（不引第三方）。引号规则保守：含 `:` `#` `@` 等保留字符就加引号 —— 节点 id `12:34` 不加引号会被 YAML 1.1 解析器读成六十进制数字 754。省 token 靠「无意义字段不写」和「短结构走 flow」，不靠自造格式。
 
-**token 引用优先于原始值。** 输出 `$color/brand` 而不是 `#0A84FF`，`@Headline/mini`
-而不是字号字重。`$` = 变量，`@` = 样式。这是本项目相对截图识别的核心价值，改采集或
-序列化时不要退化成裸值。
+**token 引用优先于原始值。** 输出 `$color/brand` 而不是 `#0A84FF`，`@Headline/mini` 而不是字号字重。`$` = 变量，`@` = 样式。这是本项目相对截图识别的核心价值，改采集或序列化时不要退化成裸值。
 
-**上下文预算是第一约束。** 中间数据模型的可选字段**在无意义时一律省略**
-（opacity=1、visible=true、rotation=0…）。加字段前先估算它在典型设计稿上多产生多少
-token。组件实例内部默认不展开、文本图层名与内容重复时只输出一次，都是这条的产物。
+**上下文预算是第一约束。** 中间数据模型的可选字段**在无意义时一律省略**（opacity=1、visible=true、rotation=0…）。加字段前先估算它在典型设计稿上多产生多少 token。组件实例内部默认不展开、文本图层名与内容重复时只输出一次，都是这条的产物。
 
-**路径参数必须由前端解析成绝对路径。** tool 跑在 daemon 里，daemon 的 cwd 是它被
-拉起来时那个目录，跟用户此刻在哪毫无关系。要接收路径的 tool 在 `ToolDef.pathArgs`
-里声明参数名，CLI 前端调 `absolutizePathArgs` 解析后再发出去。
+**路径参数必须由前端解析成绝对路径。** tool 跑在 daemon 里，daemon 的 cwd 是它被拉起来时那个目录，跟用户此刻在哪毫无关系。要接收路径的 tool 在 `ToolDef.pathArgs` 里声明参数名，CLI 前端调 `absolutizePathArgs` 解析后再发出去。
 
 **不静默猜测目标文档。** `router.ts`：单连接自动选，多连接未指定时报错并列出候选。
 
-**输出格式改 `server/src/yaml.ts`，不要改插件。** 插件改一行要重新 build 加在 Figma
-里重载；daemon 重启就生效。只有字段根本没采集时才动 `plugin/src/collect/`。
+**输出格式改 `server/src/yaml.ts`，不要改插件。** 插件改一行要重新 build 加在 Figma 里重载；daemon 重启就生效。只有字段根本没采集时才动 `plugin/src/collect/`。
 
-**折叠 / 走查 / 派生视角都在 server 侧吃同一份中间 JSON。** 插件只负责把一棵完整的树
-捞回来，怎么裁（`fold.ts` 的图标/系统 chrome/同构兄弟折叠）、怎么聚合（`plan.ts`）、
-怎么走查（`lint.ts`）、怎么翻译（`css.ts`）都是 server 的事。加派生视角不要动插件。
-折叠是**有损**的 —— 每条都必须留一个关闭开关（`--expand-icons` / `--expand-system` /
-`--no-dedupe`），且**折叠后原始节点 id 必须仍能在输出里检索到**（`sameAs` 行带自己的 id）。
+**折叠 / 走查 / 派生视角都在 server 侧吃同一份中间 JSON。** 插件只负责把一棵完整的树捞回来，怎么裁（`fold.ts` 的图标/系统控件/同构兄弟折叠）、怎么聚合（`plan.ts`）、怎么走查（`lint.ts`）、怎么翻译（`css.ts`）都是 server 的事。加派生视角不要动插件。折叠是**有损**的 —— 每条都必须留一个关闭开关（`--expand-icons` / `--expand-system` / `--no-dedupe`），且**折叠后原始节点 id 必须仍能在输出里检索到**（`sameAs` 行带自己的 id）。
 
-**能机械算出来的就别让使用者手算。** `abs` 绝对坐标（不用逐层累加 pos）、行高实测值
-（不用拿 size 反推）、font-weight 数值（不用查 style 名表）、currentColor 替换 —— 这些
-都是「算错一位也看不出来、错误直接进交付物」的地方，宁可每个节点多一行也要给全。
+**能机械算出来的就别让使用者手算。** `abs` 绝对坐标（不用逐层累加 pos）、行高实测值（不用拿 size 反推）、font-weight 数值（不用查 style 名表）、currentColor 替换 —— 这些都是「算错一位也看不出来、错误直接进交付物」的地方，宁可每个节点多一行也要给全。
 
-**tool 定义只写在 `server/src/tools/registry.ts`。** 一份 zod schema / 实现 / 描述；
-CLI 的 `--help` 和参数校验从 schema 反射生成。
+**tool 定义只写在 `server/src/tools/registry.ts`。** 一份 zod schema / 实现 / 描述；CLI 的 `--help` 和参数校验从 schema 反射生成。
 
 ## 参考文档（按需 Read）
 

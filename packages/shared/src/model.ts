@@ -242,7 +242,7 @@ export interface NodeStat {
   /** 是组件实例 */
   instance?: true;
   /** 子树里命中系统组件名单的节点数 */
-  systemChrome?: number;
+  systemInset?: number;
 }
 
 export interface NodeMatch {

@@ -9,7 +9,7 @@ import {
   ErrorCode,
   MAX_IMAGE_DIMENSION,
   Method,
-  systemChromeMatcher,
+  systemInsetMatcher,
   type DocContextParams,
   type DocContextResult,
   type DsComponentsParams,
@@ -157,7 +157,7 @@ async function nodeTree(params: NodeTreeParams): Promise<NodeTreeResult> {
   // --stat 不进采集流程：它的全部意义就是「不把内容读进来也能判断规模」
   if (params?.stat) {
     const stats: NodeStat[] = [];
-    const isSystem = systemChromeMatcher();
+    const isSystem = systemInsetMatcher();
     for (const root of roots) stats.push(...collectStats(root, includeHidden, isSystem));
     return { roots: [], nodeCount: 0, stats, origin: originOf(roots[0]) };
   }
@@ -200,16 +200,17 @@ async function nodeDetail(params: NodeDetailParams): Promise<NodeDetailResult> {
   if (ids.length === 0) fail(ErrorCode.BAD_REQUEST, 'ids 不能为空');
 
   const cache = new ResolveCache();
+  const depth = params?.depth ?? (params?.withChildren ? 1 : 0);
   const opts = options({
     detail: 'full',
-    depth: params?.withChildren ? 1 : 0,
-    maxNodes: 200,
+    depth,
+    maxNodes: depth > 1 ? DEFAULT_MAX_NODES : 200,
   });
 
   const nodes: NodeInfo[] = [];
   const missing: string[] = [];
   for (const id of ids) {
-    const node = await figma.getNodeByIdAsync(id).catch(() => null);
+    const node = await resolveNode(id);
     if (!node) {
       missing.push(id);
       continue;
@@ -275,14 +276,18 @@ async function nodeText(params: NodeTextParams): Promise<NodeTextResult> {
   }
 
   const items: TextItem[] = [];
+  // 隐藏图层是被**过滤**掉的，不是被截断的。拿 textNodes.length 和 items.length
+  // 比会把「过滤掉 5 个隐藏图层」误报成「已截断」，让下游以为文案没抽全
+  let total = 0;
   for (const node of textNodes) {
     if (!params?.includeHidden && !isVisibleInTree(node)) continue;
-    if (items.length >= limit) break;
+    total++;
+    if (items.length >= limit) continue;
     items.push({ id: node.id, name: node.name, text: node.characters });
   }
 
-  const result: NodeTextResult = { items };
-  if (textNodes.length > items.length) result.truncated = true;
+  const result: NodeTextResult = { items, total };
+  if (total > items.length) result.truncated = true;
   return result;
 }
 
@@ -363,6 +368,8 @@ async function exportTargetOf(node: SceneNode, cache: ResolveCache): Promise<Exp
   const component = await nearestComponentName(node);
   if (component) target.component = component;
 
+  if (node.type !== 'TEXT' && hasTextDescendant(node)) target.hasText = true;
+
   const paints = await subtreePaints(node, cache);
   if (paints.length > 0) target.paints = paints;
 
@@ -441,6 +448,12 @@ async function subtreePaints(
   return [...byColor.values()];
 }
 
+/** 子树里有没有文本。切图目标混进文字是个静默错误，跑到 APK 里才会被发现。 */
+function hasTextDescendant(node: SceneNode): boolean {
+  if (!('findOne' in node)) return false;
+  return (node as FrameNode).findOne((n) => n.type === 'TEXT') !== null;
+}
+
 /** 配了导出设置的节点、以及切片节点，都是设计师明确标出来「这个要切」的。 */
 function isExportMarked(node: SceneNode): boolean {
   if (node.type === 'SLICE') return true;
@@ -471,7 +484,7 @@ async function nodeExportPlan(params: NodeExportPlanParams): Promise<NodeExportP
   };
 
   for (const id of ids) {
-    const node = await figma.getNodeByIdAsync(id);
+    const node = await resolveNode(id);
     if (!node || !('type' in node) || node.type === 'PAGE' || node.type === 'DOCUMENT') {
       // 页面本身不是切图对象，但递归时它的子孙可能是
       if (params?.recursive && node && 'findAll' in node) {
@@ -620,10 +633,44 @@ function options(o: {
   };
 }
 
+/**
+ * 按 id 取节点，实例内部 id 走兜底。
+ *
+ * `getNodeByIdAsync` 对实例内部节点（`I<实例 id>;<主组件子节点 id>…`）不是永远成立的：
+ * 实例子树是惰性物化的，没被展开过时这条查询会返回 null。而这些 id 恰恰是我们
+ * 自己在 `--expand-instances` 的输出里印出来的 —— **凡是输出里印出来的 id 都必须
+ * 能直接寻址**，否则下游的 export / node / tree 会随机失败。
+ *
+ * 兜底：从 id 头部的实例 id 取到那个实例，遍历它的子树按 id 精确匹配。
+ * 遍历本身就会物化子树，所以这一步同时也修好了后续的直接查询。
+ */
+async function resolveNode(id: string): Promise<BaseNode | null> {
+  const direct = await figma.getNodeByIdAsync(id).catch(() => null);
+  if (direct) return direct;
+
+  // I18:4603;1656:28675 → 宿主实例 18:4603
+  const match = /^I([^;]+);/.exec(id);
+  if (!match) return null;
+
+  const host = await figma.getNodeByIdAsync(match[1]!).catch(() => null);
+  if (!host || !('findOne' in host)) return null;
+  return (host as FrameNode).findOne((n) => n.id === id) ?? null;
+}
+
 async function requireNode(id: string): Promise<BaseNode> {
-  const node = await figma.getNodeByIdAsync(id).catch(() => null);
-  if (!node) fail(ErrorCode.NOT_FOUND, `找不到节点 ${id}`);
+  const node = await resolveNode(id);
+  if (!node) fail(ErrorCode.NOT_FOUND, notFoundMessage(id));
   return node;
+}
+
+/** 「不存在」和「宿主实例还在、但这个子节点找不到」要分开说：应对方式完全不同。 */
+function notFoundMessage(id: string): string {
+  const match = /^I([^;]+);/.exec(id);
+  if (!match) return `找不到节点 ${id}`;
+  return (
+    `找不到节点 ${id}。这是实例 ${match[1]} 内部的 id，` +
+    `宿主实例里没有匹配项 —— 先 tree --root-id ${match[1]} --expand-instances 确认当前 id`
+  );
 }
 
 async function resolvePages(

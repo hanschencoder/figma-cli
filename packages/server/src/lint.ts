@@ -32,7 +32,7 @@ export interface LintContext {
   spacingScale: number[];
   /** token 名 → 各 mode 的值，用于查重复定义 */
   tokenValues: Map<string, Record<string, string>>;
-  /** 系统 chrome 判定，命中的子树整体跳过走查 */
+  /** 系统控件判定，命中的子树整体跳过走查 */
   isSystem: (name: string) => boolean;
 }
 
