@@ -55,4 +55,4 @@ npm run setup          # = bash scripts/install.sh，安装/更新 CLI 与 skill
 - 三段式约束、数据流全景、各文件职责：`.claude/docs/architecture.md`
 - 改插件或 manifest 前必读（dynamic-page 异步、端口白名单、重载规则）：`.claude/docs/figma-plugin.md`
 - 冒烟脚本的坑、真实设计稿验证方式、排查入口：`.claude/docs/testing.md`
-- 设计动机与背景取舍：`README.md`
+- 设计动机与背景取舍（为什么不走 REST、为什么是 CLI+skill、远端变量两条路、不做鉴权）：`.claude/docs/design-notes.md`
