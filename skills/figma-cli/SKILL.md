@@ -307,8 +307,10 @@ assets:
 figma-cli export "18:4558=ic_coin" "I18:4553;11132:19414=ic_back" --format SVG --currentcolor --out ./build/figma-svg   # <id>=<名字> 一步到位，省掉一轮 mv
 figma-cli export <id...> --format SVG --currentcolor --out ./build/figma-svg  # id 从 plan 的 assets 段或 find 拿；--currentcolor 把绑了 token 的颜色留给主题染
 figma-cli export <frameId> --recursive --format SVG --out ./build/figma-svg   # 整个 Frame 一次切完
-~/.claude/skills/figma-cli/scripts/svg2vd.sh -o app/src/main/res/drawable --prefix ic_ ./build/figma-svg/*.svg
+"$SKILL_DIR/scripts/svg2vd.sh" -o app/src/main/res/drawable --prefix ic_ ./build/figma-svg/*.svg
 ```
+
+`$SKILL_DIR` 是**本 skill 自己的目录**（就是这份 SKILL.md 所在处）。skill 会被链进不同工具的目录（`~/.claude/skills` / `~/.cursor/skills` / `~/.codex/skills` / `~/.agents/skills` …），**别把路径写死成其中某一个**；不确定就先 `ls ~/.claude/skills/figma-cli/scripts ~/.agents/skills/figma-cli/scripts 2>/dev/null` 找一下。
 
 **SVG 不能放 `res/` 下任何目录**（`res/` 子目录名有固定含义，aapt 直接报错）。`svg2vd.sh` 跑的是 Android Studio「Vector Asset」背后那份 `Svg2Vector`，依赖已内置，**唯一前提是 JRE/JDK 11+**；找不到 java 时脚本失败——**这时不要退而把 SVG 塞进 `res/drawable/`**，告诉用户装 java 再继续。退出码：`0` 全成功 / `3` 有转换失败 / `1` 环境问题。
 
