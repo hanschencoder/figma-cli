@@ -458,7 +458,7 @@ grep -n "推荐\|Button" "$SCRATCH/t.yaml"
 | `NO_DOCUMENT` | 插件没运行，让用户在 Figma 里启动。**不要重试**，等用户确认 |
 | `AMBIGUOUS_DOCUMENT` | 开了多个文档，`figma-cli docs` 看列表后 `figma-cli use <docId>` |
 | `TIMEOUT` | 文件太大，缩小 `--depth` / `--limit` 重试 |
-| `figma-cli: command not found` | 在项目目录跑 `bash scripts/install.sh` |
+| `figma-cli: command not found` | 没装或不在 PATH。装：`curl -fsSL https://raw.githubusercontent.com/hanschencoder/figma-cli/main/scripts/install.sh \| bash` |
 | `vars` / `styles` 是空的 | 该页没用 token，或插件是旧版（`figma-cli docs` 看 `plugin` 版本，让用户关掉插件窗口重开） |
 | 输出里没有 `abs` / `descendants` / 折叠 | 插件是旧版，让用户关掉插件窗口重开 |
 | 结构里全是坐标没有 layout | 设计稿没用 Auto Layout，只能按绝对定位还原（`ConstraintLayout` 或 `Box` + `offset`），并告诉用户 |

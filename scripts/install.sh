@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 #
-# figma-cli 一键安装 / 更新。
+# figma-cli 一键安装 / 更新。两种跑法：
 #
-#   bash scripts/install.sh              安装或更新（重复执行是安全的）
+#   curl -fsSL https://raw.githubusercontent.com/hanschencoder/figma-cli/main/scripts/install.sh | bash
+#                                        自己 clone 到 ~/.figma-cli/src 再安装
+#   bash scripts/install.sh              已经有仓库时就地安装（重复执行是安全的）
 #   bash scripts/install.sh --uninstall  卸载 CLI 与 skill
 #
 # 做四件事：装依赖并构建 → 把 figma-cli 命令链到 PATH → 把 skill 链进各 AI 工具的
@@ -10,17 +12,37 @@
 # → 停掉旧 daemon。插件 manifest 仍需在 Figma 里手动 Import（Figma 没有别的通道），
 # 脚本最后会把路径打出来。
 #
+# 仓库必须**留在本地**：全局的 figma-cli 命令和各工具的 skill 都是软链，
+# 指向仓库里的文件 —— 删掉仓库等于卸载。
+#
 # 环境变量：
+#   FIGMA_CLI_REPO    仓库地址，默认 GitHub 上的 hanschencoder/figma-cli
+#   FIGMA_CLI_BRANCH  分支，默认 main
+#   FIGMA_CLI_SRC     自动 clone 的落点，默认 ~/.figma-cli/src
 #   FIGMA_SKILL_DIR   只链到这一个目录（给非常规布局用），默认自动探测各工具
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+REPO_URL="${FIGMA_CLI_REPO:-https://github.com/hanschencoder/figma-cli.git}"
+BRANCH="${FIGMA_CLI_BRANCH:-main}"
 STATE_DIR="$HOME/.figma-cli"
+SRC_DIR="${FIGMA_CLI_SRC:-$STATE_DIR/src}"
 RECORD="$STATE_DIR/install.json"
-SKILL_SRC="$REPO_ROOT/skills/figma-cli"
 SKILL_NAME="figma-cli"
 WORKSPACE="@figma-cli/server"
 MIN_NODE_MAJOR=20
+
+# 脚本在不在一份可用的仓库里？
+#
+# `curl | bash` 时 BASH_SOURCE 是空的（或指向 /dev/fd/…），拿不到仓库 ——
+# 这种情况下自己 clone 一份到 SRC_DIR。就地跑时用脚本所在的那份，不去碰网络。
+REPO_ROOT=""
+self="${BASH_SOURCE[0]:-}"
+if [ -n "$self" ] && [ -f "$self" ]; then
+  candidate="$(cd "$(dirname "$self")/.." 2>/dev/null && pwd -P || true)"
+  if [ -n "$candidate" ] && [ -d "$candidate/skills/$SKILL_NAME" ] && [ -f "$candidate/package.json" ]; then
+    REPO_ROOT="$candidate"
+  fi
+fi
 
 # 各 AI 工具的 skill 目录。**只在工具的主目录已存在时才建链** —— 没装的工具
 # 不该被凭空造出一个 ~/.cursor 来。要支持新工具在这里加一行即可。
@@ -58,7 +80,9 @@ die()  { printf '\n%s%s%s\n' "$C_ERR" "$(emo 💥)$1" "$C_OFF" >&2; exit 1; }
 
 usage() {
   cat <<'EOF'
-用法: bash scripts/install.sh [选项]
+用法:
+  curl -fsSL https://raw.githubusercontent.com/hanschencoder/figma-cli/main/scripts/install.sh | bash
+  bash scripts/install.sh [选项]
 
   (无选项)      安装或更新 CLI 与 skill，可重复执行
   --uninstall   卸载：解除 figma-cli 命令、移除各工具下的 skill 软链、停掉 daemon
@@ -68,7 +92,13 @@ usage() {
 skill 会链进已安装的 AI 工具：Claude Code / Cursor / Codex / Gemini CLI /
 GitHub Copilot CLI，以及通用的 ~/.agents/skills。没装的工具自动跳过。
 
+没有现成仓库时（curl 那条）脚本会自己 clone 到 ~/.figma-cli/src。
+仓库要留在本地：命令和 skill 都是指向它的软链。
+
 环境变量:
+  FIGMA_CLI_REPO    仓库地址，默认 https://github.com/hanschencoder/figma-cli.git
+  FIGMA_CLI_BRANCH  分支，默认 main
+  FIGMA_CLI_SRC     自动 clone 的落点，默认 ~/.figma-cli/src
   FIGMA_SKILL_DIR   只链到这一个目录，跳过自动探测
 EOF
 }
@@ -121,6 +151,26 @@ skill_dirs() {
   done
 }
 
+# clone 或更新自动管理的那份仓库，之后 REPO_ROOT 指向它。
+fetch_repo() {
+  command -v git >/dev/null 2>&1 || die "没找到 git —— 自动安装需要它来拉仓库，或者自己 clone 后跑 bash scripts/install.sh"
+
+  if [ -d "$SRC_DIR/.git" ]; then
+    info "更新 $SRC_DIR"
+    git -C "$SRC_DIR" fetch --depth 1 origin "$BRANCH" >/dev/null 2>&1 \
+      || die "拉取 $REPO_URL 的 $BRANCH 失败 —— 检查网络或 FIGMA_CLI_REPO"
+    git -C "$SRC_DIR" reset --hard "origin/$BRANCH" >/dev/null 2>&1 || die "更新 $SRC_DIR 失败"
+  elif [ -e "$SRC_DIR" ]; then
+    die "$SRC_DIR 已存在但不是 git 仓库。确认无用后删掉它，或用 FIGMA_CLI_SRC 换个位置。"
+  else
+    info "clone $REPO_URL"
+    mkdir -p "$(dirname "$SRC_DIR")"
+    git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$SRC_DIR" >/dev/null 2>&1 \
+      || die "clone $REPO_URL 失败 —— 检查网络或 FIGMA_CLI_REPO"
+  fi
+  REPO_ROOT="$SRC_DIR"
+}
+
 # 停掉常驻 daemon。旧进程跑的是旧代码，不停就等于没更新。
 stop_daemon() {
   if command -v figma-cli >/dev/null 2>&1; then
@@ -136,7 +186,9 @@ stop_daemon() {
       kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
     fi
   fi
-  pkill -f "$REPO_ROOT/packages/server/dist/daemon-entry.js" 2>/dev/null || true
+  # 没有仓库上下文时不做这步：模式串会退化成任意路径都能命中的子串
+  [ -n "$REPO_ROOT" ] && pkill -f "$REPO_ROOT/packages/server/dist/daemon-entry.js" 2>/dev/null || true
+  return 0
 }
 
 npm_bin_dir() { printf '%s/bin' "$(npm prefix -g)"; }
@@ -144,6 +196,12 @@ npm_bin_dir() { printf '%s/bin' "$(npm prefix -g)"; }
 # ---------------------------------------------------------------- 卸载
 
 if [ "$MODE" = uninstall ]; then
+  # `curl | bash -s -- --uninstall` 没有仓库上下文，从安装记录里找回来 ——
+  # 判断「这个软链是不是我们装的」全靠它
+  [ -z "$REPO_ROOT" ] && REPO_ROOT="$(json_field "$RECORD" repoRoot)"
+  [ -z "$REPO_ROOT" ] && [ -d "$SRC_DIR/.git" ] && REPO_ROOT="$SRC_DIR"
+  SKILL_SRC="${REPO_ROOT:-/dev/null}/skills/$SKILL_NAME"
+
   step "停止 daemon" 🛑
   stop_daemon
   info "已停止（如果本来就没在跑，忽略）"
@@ -176,6 +234,16 @@ $(skill_dirs all)
 EOF
   [ "$removed" = 0 ] && info "没有找到本仓库装的 skill，跳过"
 
+  # 自动 clone 的那份是脚本自己的东西，跟着卸载一起收走；
+  # 用户自己 clone 的仓库一律不碰
+  if [ "$REPO_ROOT" = "$SRC_DIR" ] && [ -d "$SRC_DIR/.git" ]; then
+    step "移除自动安装的仓库" 🗑️
+    rm -rf "$SRC_DIR"
+    ok "已删除 $SRC_DIR"
+  elif [ -n "$REPO_ROOT" ]; then
+    dim "仓库 $REPO_ROOT 是你自己 clone 的，保留不动"
+  fi
+
   rm -f "$RECORD"
   step "卸载完成" 👋
   dim "运行数据仍在 ${STATE_DIR}（daemon.log / exports），需要的话自行删除"
@@ -197,9 +265,18 @@ NODE_MAJOR="$(printf '%s' "${NODE_VERSION#v}" | cut -d. -f1)"
   || die "Node 版本过低：${NODE_VERSION}，需要 >= $MIN_NODE_MAJOR"
 
 info "node $NODE_VERSION  npm $(npm -v)"
-info "仓库 $REPO_ROOT"
 
-[ -d "$SKILL_SRC" ] || die "找不到 $SKILL_SRC —— 请在仓库内运行本脚本"
+if [ -z "$REPO_ROOT" ]; then
+  step "获取仓库" ⬇️
+  fetch_repo
+  MANAGED=1
+else
+  MANAGED=0
+fi
+SKILL_SRC="$REPO_ROOT/skills/$SKILL_NAME"
+
+info "仓库 $REPO_ROOT"
+[ -d "$SKILL_SRC" ] || die "找不到 $SKILL_SRC —— $REPO_ROOT 看起来不是 figma-cli 的仓库"
 
 VERSION="$(json_field "$REPO_ROOT/package.json" version)"
 COMMIT="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || printf 'unknown')"
@@ -263,8 +340,8 @@ if [ -e "$BIN_PATH" ] || [ -L "$BIN_PATH" ]; then
     mv "$BIN_PATH" "$bak"
     warn "原有的 figma-cli 命令指向 ${current:-未知}，已备份到 $bak"
   else
-    die "$BIN_PATH 已存在且指向 ${current:-未知}，不是本仓库装的。
-    确认要接管就加 --force（会先备份），否则请先自行处理。"
+    die "$BIN_PATH 已存在且指向 ${current:-未知}，不是这份仓库装的
+    （可能是同一个项目的另一份 checkout）。确认要接管就加 --force（会先备份）。"
   fi
 fi
 
@@ -361,6 +438,10 @@ else
 
     然后 Plugins → Development → Figma CLI Bridge 运行它。
 EOF
+fi
+
+if [ "${MANAGED:-0}" = 1 ]; then
+  dim "仓库在 $REPO_ROOT —— 命令与 skill 都是指向它的软链，别删；重跑本脚本即可更新"
 fi
 
 cat <<EOF

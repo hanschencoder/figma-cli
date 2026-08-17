@@ -2,7 +2,7 @@
 
 自建的 Figma → AI 通道。**Figma 插件**直接读本地打开的设计文档，经 WebSocket 交给常驻 **daemon**，`figma-cli` 命令把设计稿以低 token、保留 design token 语义的形式交给 AI 模型。
 
-走 Plugin API 而不是 REST API：没有速率限制，读到的永远是屏幕上此刻的样子（含未保存的编辑、当前选中项、实例 override）。输出里颜色是 `$color/brand` 而不是 `#0A84FF`，字体是 `@text/heading-sm` 而不是 17px。
+走 Plugin API 而不是 REST API，**没有速率限制（figma-cli 开发的主要原因）**。
 
 **v1 只读。** 需要 Figma 桌面版开着且插件在运行，不能用于 CI 或后台批处理。
 
@@ -12,14 +12,19 @@
 
 **前置条件**：Node ≥ 20、Figma 桌面版。
 
-### 1. 安装
+### 1. 安装和卸载
 
 ```bash
-git clone <仓库地址> && cd figma-cli
-bash scripts/install.sh
+curl -fsSL https://raw.githubusercontent.com/hanschencoder/figma-cli/main/scripts/install.sh | bash
 ```
 
-装依赖 → 构建三个包 → 把 `figma-cli` 链到 PATH → 把 skill 链进已安装的 AI 工具 → 停掉可能还在跑的旧 daemon。
+- clone 到 `~/.figma-cli/src`
+- 装依赖并构建三个包
+- 把 `figma-cli` 链到 PATH
+- 把 skill 链进已安装的 AI 工具
+- 停掉可能还在跑的旧 daemon
+
+**仓库会留在本地。** 全局的 `figma-cli` 命令和各工具的 skill 都是指向仓库里文件的软链，删掉仓库等于卸载。
 
 skill 会自动链进这些工具的 skill 目录，**装了哪个链哪个**，没装的跳过：
 
@@ -32,18 +37,18 @@ skill 会自动链进这些工具的 skill 目录，**装了哪个链哪个**，
 | GitHub Copilot CLI | `~/.copilot/skills` |
 | 通用 | `~/.agents/skills` |
 
-链接指向仓库里的 `skills/figma-cli`，所以**更新就是 `git pull`**，各工具立刻看到新版；重跑 `bash scripts/install.sh` 只是为了重新构建 CLI。skill 需要重启 AI 工具才会被加载。
+链接指向仓库里的 `skills/figma-cli`，所以 skill 的更新就是 `git pull`，各工具立刻看到新版；CLI 变了才需要重跑安装脚本重新构建。skill 需要重启 AI 工具才会被加载。
+
+更新与卸载 —— 重跑同一条命令就是更新（自动 clone 的那份会先 `git pull`）：
 
 ```bash
-bash scripts/install.sh --uninstall   # 卸载
-bash scripts/install.sh --force       # figma-cli 命令 / skill 已被占用时接管（先备份）
+curl -fsSL https://raw.githubusercontent.com/hanschencoder/figma-cli/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/hanschencoder/figma-cli/main/scripts/install.sh | bash -s -- --uninstall
 ```
-
-> 工具装在非常规位置：`FIGMA_SKILL_DIR=<该工具的 skills 目录> bash scripts/install.sh`，只链这一个。`manifest.json` 由构建生成，不要手改。
 
 ### 2. 在 Figma 里导入插件
 
-Figma 桌面版 → `Plugins` → `Development` → `Import plugin from manifest...`，选 `packages/plugin/manifest.json`。导入后在 `Plugins → Development → Figma CLI Bridge` 运行，插件面板会显示连接状态。
+Figma 桌面版 → `Plugins` → `Development` → `Import plugin from manifest...`，选仓库里的 `packages/plugin/manifest.json`（curl 装的在 `~/.figma-cli/src/packages/plugin/manifest.json`，安装脚本最后会把完整路径打出来）。导入后在 `Plugins → Development → Figma CLI Bridge` 运行，插件面板会显示连接状态。
 
 只需导入一次。更新后**关掉插件窗口重开**即可；只有 `manifest.json` 变了（端口段调整）才必须重新 Import。
 
