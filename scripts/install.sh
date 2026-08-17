@@ -55,7 +55,10 @@ TOOL_DIRS=(
   "$HOME/.agents/skills:通用 skills 目录"
 )
 
-FORCE=0
+# 同名的 figma-cli 命令 / skill 默认直接接管。它几乎总是「同一个项目的另一份
+# checkout」—— 为这种情况停下来要求加参数，只是把一次必然的重跑摊给使用者。
+# 真实文件/目录会先备份；软链是安装器自己的产物，直接换掉。
+TAKEOVER=1
 MODE=install
 
 # ---------------------------------------------------------------- 输出
@@ -86,7 +89,9 @@ usage() {
 
   (无选项)      安装或更新 CLI 与 skill，可重复执行
   --uninstall   卸载：解除 figma-cli 命令、移除各工具下的 skill 软链、停掉 daemon
-  --force       接管不是本仓库装的 figma-cli 命令 / skill（会先备份）
+  --keep-existing  遇到不是这份仓库装的 figma-cli 命令 / skill 就报错停下，
+                不接管（默认是接管，真实文件会先备份）
+  --force       兼容旧写法，默认已经是接管，给了也不影响
   -h, --help    显示本说明
 
 skill 会链进已安装的 AI 工具：Claude Code / Cursor / Codex / Gemini CLI /
@@ -106,7 +111,8 @@ EOF
 while [ $# -gt 0 ]; do
   case "$1" in
     --uninstall) MODE=uninstall ;;
-    --force) FORCE=1 ;;
+    --force) TAKEOVER=1 ;;
+    --keep-existing) TAKEOVER=0 ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; die "未知参数 $1" ;;
   esac
@@ -337,15 +343,21 @@ OURS="$REPO_ROOT/packages/server/dist/cli.js"
 
 if [ -e "$BIN_PATH" ] || [ -L "$BIN_PATH" ]; then
   current="$(realpath_of "$BIN_PATH" || true)"
+  # 断链时 realpath 解不出来，退回 readlink —— 「被换掉的是什么」得说得出口
+  if [ -z "$current" ]; then current="$(readlink "$BIN_PATH" 2>/dev/null || true)"; fi
   if [ "$current" = "$OURS" ]; then
     dim "已有本仓库的链接，重新链接以确保是最新的"
-  elif [ "$FORCE" = 1 ]; then
+  elif [ "$TAKEOVER" = 0 ]; then
+    die "$BIN_PATH 已存在且指向 ${current:-未知}，不是这份仓库装的
+    （多半是同一个项目的另一份 checkout）。去掉 --keep-existing 就会接管。"
+  elif [ -L "$BIN_PATH" ]; then
+    # 软链就是 npm link 自己的产物，备份它只会在 PATH 目录里堆垃圾
+    rm "$BIN_PATH"
+    warn "原来的 figma-cli 指向 ${current:-未知}，已改指向这份仓库"
+  else
     bak="$(backup_path "$BIN_PATH")"
     mv "$BIN_PATH" "$bak"
-    warn "原有的 figma-cli 命令指向 ${current:-未知}，已备份到 $bak"
-  else
-    die "$BIN_PATH 已存在且指向 ${current:-未知}，不是这份仓库装的
-    （可能是同一个项目的另一份 checkout）。确认要接管就加 --force（会先备份）。"
+    warn "原有的 figma-cli 是个真实文件（指向 ${current:-未知}），已备份到 $bak"
   fi
 fi
 
@@ -375,11 +387,11 @@ link_skill() {
       SKILL_TARGETS+=("$target")
       return
     fi
-    if [ "$FORCE" = 1 ] || [ -z "$linked" ]; then
+    if [ "$TAKEOVER" = 1 ] || [ -z "$linked" ]; then
       rm "$target"
       warn "${label}：原软链指向 ${linked:-已失效的路径}，已替换"
     else
-      warn "${label}：$target 指向 ${linked}，不是本仓库装的，跳过（加 --force 接管）"
+      warn "${label}：$target 指向 ${linked}，不是这份仓库装的，跳过（--keep-existing）"
       return
     fi
   elif [ -e "$target" ]; then
