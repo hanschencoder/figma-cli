@@ -320,6 +320,10 @@ run_quiet "npm install" npm install --no-audit --no-fund
 ok "依赖就绪"
 
 step "构建 shared / server / plugin" 🔨
+# 先清掉增量状态再编。tsbuildinfo 曾经被误提交过，留在老 clone 里会让 tsc -b
+# 认为「已经编译过」而什么都不发射 —— 装出来的 dist 缺一半文件。
+# 安装是低频操作，多花几秒换一个一定完整的产物。
+rm -rf "$REPO_ROOT"/packages/*/dist "$REPO_ROOT"/packages/*/tsconfig.tsbuildinfo
 run_quiet "构建" npm run build
 ok "产物就绪"
 

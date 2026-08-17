@@ -1,5 +1,9 @@
 node_modules/
 dist/
+
+# tsc -b 的增量状态。**绝对不能入库**：dist/ 不入库而它入库的话，全新 clone 里
+# tsc 会认为「已经编译过」而什么都不发射，装出一个缺文件的 dist
+*.tsbuildinfo
 *.log
 .DS_Store
 .env
