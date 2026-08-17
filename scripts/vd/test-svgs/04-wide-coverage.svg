@@ -1,0 +1,17 @@
+<svg width="64" height="64" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<radialGradient id="r" cx="32" cy="32" r="30" gradientUnits="userSpaceOnUse">
+<stop offset="0" stop-color="#fff" stop-opacity="0.9"/><stop offset="1" stop-color="#036" stop-opacity="0.2"/></radialGradient>
+<clipPath id="cp"><circle cx="32" cy="32" r="28"/></clipPath>
+</defs>
+<g clip-path="url(#cp)">
+  <ellipse cx="32" cy="20" rx="20" ry="10" fill="url(#r)"/>
+  <polygon points="8,56 32,36 56,56" fill="#e91e63" fill-rule="evenodd"/>
+  <polyline points="4,4 20,12 36,4" stroke="#333" stroke-width="2" fill="none" stroke-linecap="round"/>
+  <line x1="0" y1="32" x2="64" y2="32" stroke="#0a0" stroke-width="1.5" stroke-dasharray="4 2"/>
+  <g transform="translate(10,10) scale(0.5)" opacity="0.6">
+    <rect x="0" y="0" width="20" height="20" rx="4" style="fill:#ff9800;stroke:#000;stroke-width:2"/>
+  </g>
+  <path d="M50 10 A8 8 0 1 1 49.9 10 Z" fill="#9c27b0"/>
+</g>
+</svg>

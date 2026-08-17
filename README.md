@@ -315,7 +315,9 @@ figma-cli/
 │  ├─ server/     daemon + WS Hub + tools 注册表 + YAML 序列化 + cli.ts 前端
 │  └─ plugin/     manifest.json + code.ts（沙箱）+ ui.html/ui.ts
 ├─ skills/figma-cli/  给 AI 的使用说明（软链到 ~/.claude/skills/）
+│  └─ scripts/           svg2vd.sh + 内置的 Svg2Vector（lib/，只需 JRE 11+）
 └─ scripts/       install.sh 一键安装/更新 · smoke.mjs 全链路冒烟
+   └─ vd/         Svg2Vd.java + build-deps-jar.sh + 回归样例（维护者用，不随 skill 分发）
 ```
 
 技术栈：TypeScript · `@figma/plugin-typings` · esbuild · npm workspaces
